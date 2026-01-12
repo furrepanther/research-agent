@@ -1,0 +1,17 @@
+# Configuration for Research Agent
+
+# General Settings
+storage_path: "F:/Antigravity_Results/Research_Papers/data"
+papers_dir: "F:/Antigravity_Results/Research_Papers/data/papers"
+db_path: "F:/Antigravity_Results/Research_Papers/data/metadata.db"
+
+# Search Settings
+max_results_daily: 200
+max_results_backfill: 200
+
+# Export Settings
+export_dir: "F:/Antigravity_Results/Research_Papers"
+export_filename: "research_log.xlsx"
+
+# Schedule (If running as a daemon/long-running script)
+scheduled_time: "06:00" # 24-hour format
