@@ -4,7 +4,8 @@ from src.utils import logger
 
 class StorageManager:
     # Database schema version - increment when adding new migrations
-    CURRENT_VERSION = 2
+    # Database schema version - increment when adding new migrations
+    CURRENT_VERSION = 5
 
     def __init__(self, db_path):
         self.db_path = db_path
@@ -46,6 +47,81 @@ class StorageManager:
         """)
         logger.info("  - Created schema_version table")
 
+    def _migration_v4_high_efficiency(self, cursor):
+        """
+        Migration v4: Transition to Integer Primary Key and Numeric Hashing.
+        - Renames existing 'id' (string) to 'paper_id'.
+        - Adds 'id' (INTEGER PRIMARY KEY AUTOINCREMENT).
+        - Adds 'paper_hash' and 'title_hash' (INTEGER) for fast deduplication.
+        """
+        from src.utils import generate_stable_hash
+        
+        logger.info("Applying migration v4: Implementing High-Efficiency Numeric Schema")
+        
+        # 1. Create the NEW table with the optimized schema
+        cursor.execute("""
+            CREATE TABLE papers_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_id TEXT,
+                paper_hash INTEGER,
+                title_hash INTEGER,
+                title TEXT,
+                published_date TEXT,
+                authors TEXT,
+                abstract TEXT,
+                pdf_path TEXT,
+                source_url TEXT,
+                downloaded_date TEXT,
+                synced_to_cloud BOOLEAN DEFAULT 0,
+                source TEXT
+            )
+        """)
+        
+        # 2. Get all existing data
+        cursor.execute("SELECT * FROM papers")
+        columns = [description[0] for description in cursor.description]
+        rows = cursor.fetchall()
+        
+        logger.info(f"  - Migrating {len(rows)} records to new schema...")
+        
+        # 3. Insert and pre-compute hashes
+        for row in rows:
+            data = dict(zip(columns, row))
+            
+            # Map old 'id' (string) to 'paper_id'
+            paper_id = data.get('id', '')
+            source = data.get('source', 'arxiv')
+            title = data.get('title', '')
+            
+            # Generate stable hashes
+            paper_hash = generate_stable_hash(f"{source}:{paper_id}")
+            title_hash = generate_stable_hash(self.normalize_text(title))
+            
+            cursor.execute("""
+                INSERT INTO papers_new (
+                    paper_id, paper_hash, title_hash, title, published_date, 
+                    authors, abstract, pdf_path, source_url, downloaded_date, 
+                    synced_to_cloud, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                paper_id, paper_hash, title_hash, title, 
+                data.get('published_date'), data.get('authors'), 
+                data.get('abstract'), data.get('pdf_path'), 
+                data.get('source_url'), data.get('downloaded_date'), 
+                data.get('synced_to_cloud', 0), source
+            ))
+            
+        # 4. Swap tables
+        cursor.execute("DROP TABLE papers")
+        cursor.execute("ALTER TABLE papers_new RENAME TO papers")
+        
+        # 5. Create Indexes for O(1) lookups
+        cursor.execute("CREATE UNIQUE INDEX idx_paper_hash ON papers(paper_hash)")
+        cursor.execute("CREATE INDEX idx_title_hash ON papers(title_hash)")
+        cursor.execute("CREATE INDEX idx_paper_id ON papers(paper_id)")
+        
+        logger.info("  - Migration v4 complete: sequential IDs and hashes implemented.")
+
     def _run_migrations(self, conn, cursor):
         """Run all pending migrations in order."""
         current_version = self._get_schema_version(cursor)
@@ -59,6 +135,8 @@ class StorageManager:
         migrations = {
             1: self._migration_v1_add_source_column,
             2: self._migration_v2_create_version_table,
+            4: self._migration_v4_high_efficiency,
+            5: self._migration_v5_remove_paper_id,
         }
 
         # Apply migrations in order
@@ -78,10 +156,12 @@ class StorageManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Create base tables
+        # Create base tables (Updated for v5 schema: no paper_id)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS papers (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_hash INTEGER,
+                title_hash INTEGER,
                 title TEXT,
                 published_date TEXT,
                 authors TEXT,
@@ -93,20 +173,104 @@ class StorageManager:
                 source TEXT
             )
         """)
+        
+        # Ensure indexes exist even for fresh DBs
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_hash ON papers(paper_hash)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_title_hash ON papers(title_hash)")
 
-        # Run versioned migrations
+        # Create version table immediately
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+        """)
+
+        # If it's a fresh DB (no version recorded), set it to CURRENT_VERSION immediately
+        cursor.execute("SELECT COUNT(*) FROM schema_version")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, datetime('now'))", (self.CURRENT_VERSION,))
+            logger.info(f"Initialized fresh database at v{self.CURRENT_VERSION}")
+
+        # Run versioned migrations (for existing DBs)
         self._run_migrations(conn, cursor)
 
         conn.commit()
         conn.close()
 
-    def paper_exists(self, paper_id):
+    def _migration_v5_remove_paper_id(self, cursor):
+        """
+        Migration v5: Remove 'paper_id' column for a purely URL-centric schema.
+        """
+        logger.info("Applying migration v5: Removing 'paper_id' column")
+        
+        # 1. Create the NEW table without paper_id
+        cursor.execute("""
+            CREATE TABLE papers_v5 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_hash INTEGER,
+                title_hash INTEGER,
+                title TEXT,
+                published_date TEXT,
+                authors TEXT,
+                abstract TEXT,
+                pdf_path TEXT,
+                source_url TEXT,
+                downloaded_date TEXT,
+                synced_to_cloud BOOLEAN DEFAULT 0,
+                source TEXT
+            )
+        """)
+        
+        # 2. Get all existing data (excluding paper_id)
+        cursor.execute("SELECT id, paper_hash, title_hash, title, published_date, authors, abstract, pdf_path, source_url, downloaded_date, synced_to_cloud, source FROM papers")
+        rows = cursor.fetchall()
+        
+        logger.info(f"  - Migrating {len(rows)} records to v5 schema...")
+        
+        # 3. Insert into new table
+        for row in rows:
+            cursor.execute("""
+                INSERT INTO papers_v5 (
+                    id, paper_hash, title_hash, title, published_date, 
+                    authors, abstract, pdf_path, source_url, downloaded_date, 
+                    synced_to_cloud, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, row)
+            
+        # 4. Swap tables
+        cursor.execute("DROP TABLE papers")
+        cursor.execute("ALTER TABLE papers_v5 RENAME TO papers")
+        
+        # 5. Recreate Indexes
+        cursor.execute("CREATE UNIQUE INDEX idx_paper_hash ON papers(paper_hash)")
+        cursor.execute("CREATE INDEX idx_title_hash ON papers(title_hash)")
+        
+        logger.info("  - Migration v5 complete: 'paper_id' removed.")
+
+    def paper_exists_by_hash(self, p_hash):
+        """Check if a paper exists using its 64-bit numeric hash."""
+        if not p_hash or p_hash == 0:
+            return False
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM papers WHERE id = ?", (paper_id,))
+        cursor.execute("SELECT 1 FROM papers WHERE paper_hash = ?", (p_hash,))
         exists = cursor.fetchone() is not None
         conn.close()
         return exists
+
+    def paper_exists(self, paper_id=None, source_url=None):
+        """
+        Backward compatible check. 
+        If source_url is provided, it uses the URL-centric hash.
+        """
+        from src.utils import generate_stable_hash, normalize_url
+        
+        if source_url:
+            p_hash = generate_stable_hash(normalize_url(source_url))
+            return self.paper_exists_by_hash(p_hash)
+            
+        return False # paper_id is no longer supported
 
     def normalize_text(self, text):
         import re
@@ -122,41 +286,57 @@ class StorageManager:
 
     def add_paper(self, paper_data):
         """
+        Adds a paper to the database with high-efficiency URL-centric hash checks.
         paper_data: dict containing keys matching table columns
         """
+        from src.utils import generate_stable_hash, normalize_url
+        
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         try:
-            # 1. Check for Exact ID Match (Primary Key)
-            cursor.execute("SELECT id, source, source_url FROM papers WHERE id = ?", (paper_data['id'],))
-            existing = cursor.fetchone()
+            # Shift to URL-Centric Hashing for cross-source deduplication
+            source_url = paper_data.get('source_url', '')
+            primary_url = source_url.split(',')[0].strip() if ',' in source_url else source_url.strip()
             
-            if existing:
-                logger.info(f"Paper ID exists: {paper_data['title']}")
-                # Determine if we need to update source
-                return self._merge_sources(conn, cursor, existing, paper_data)
+            # 1. Generate Hashes
+            # Use primary normalized URL for the stable paper_hash
+            p_hash = generate_stable_hash(normalize_url(primary_url)) if primary_url else 0
+            t_hash = generate_stable_hash(self.normalize_text(paper_data['title']))
 
-            # 2. Check for Content Duplicate (Title + Abstract)
-            # We search for exact title match (case-insensitive) first to minimize comparisons
-            cursor.execute("SELECT id, title, abstract, source, source_url FROM papers WHERE lower(title) = ?", (paper_data['title'].lower(),))
+            # 2. Check for Exact Match via URL Hash (Extremely fast cross-source check)
+            if p_hash != 0:
+                cursor.execute("SELECT id, source, source_url FROM papers WHERE paper_hash = ?", (p_hash,))
+                existing = cursor.fetchone()
+                
+                if existing:
+                    logger.info(f"Duplicate found by URL hash: {paper_data['title']}")
+                    return self._merge_sources(conn, cursor, existing, paper_data)
+            
+            # 3. Fallback: No longer checking paper_id
+            
+            # 4. Check for Content Duplicate (Title Hash + Abstract)
+            cursor.execute("SELECT id, title, abstract, source, source_url FROM papers WHERE title_hash = ?", (t_hash,))
             candidates = cursor.fetchall()
             
             for candidate in candidates:
-                # Check abstract similarity
-                if self.is_content_similar(paper_data['abstract'], candidate['abstract']):
-                    logger.info(f"Duplicate found by content: '{paper_data['title']}' matches '{candidate['title']}'")
-                    return self._merge_sources(conn, cursor, candidate, paper_data)
+                # Confirm with exact title and abstract similarity
+                if paper_data['title'].lower() == candidate['title'].lower():
+                    if self.is_content_similar(paper_data['abstract'], candidate['abstract']):
+                        logger.info(f"Duplicate found by hash: '{paper_data['title']}' matches '{candidate['title']}'")
+                        return self._merge_sources(conn, cursor, candidate, paper_data)
 
             # 3. If no duplicates, Insert New
             cursor.execute("""
                 INSERT OR IGNORE INTO papers (
-                    id, title, published_date, authors, abstract, 
-                    pdf_path, source_url, downloaded_date, source, synced_to_cloud
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    paper_hash, title_hash, title, published_date, 
+                    authors, abstract, pdf_path, source_url, downloaded_date, 
+                    source, synced_to_cloud
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                paper_data['id'],
+                p_hash,
+                t_hash,
                 paper_data['title'],
                 paper_data['published_date'],
                 paper_data['authors'],
@@ -164,13 +344,14 @@ class StorageManager:
                 paper_data['pdf_path'],
                 paper_data['source_url'],
                 paper_data['downloaded_date'],
-                paper_data.get('source', 'arxiv'),
+                source,
                 0 # Not synced yet
             ))
             conn.commit()
             if cursor.rowcount > 0:
-                logger.info(f"Added paper: {paper_data['title']}")
-                return True
+                new_id = cursor.lastrowid
+                logger.info(f"Added paper: {paper_data['title']} (ID: {new_id})")
+                return new_id
             else:
                 return False
                 
@@ -231,13 +412,16 @@ class StorageManager:
         conn.close()
         return [dict(row) for row in rows]
 
-    def mark_synced(self, paper_ids):
-        if not paper_ids:
+    def mark_synced(self, internal_ids):
+        """Mark papers as synced to cloud in bulk using internal IDs."""
+        if not internal_ids:
             return
+            
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        placeholders = ','.join(['?'] * len(paper_ids))
-        cursor.execute(f"UPDATE papers SET synced_to_cloud = 1 WHERE id IN ({placeholders})", paper_ids)
+        
+        placeholders = ','.join(['?'] * len(internal_ids))
+        cursor.execute(f"UPDATE papers SET synced_to_cloud = 1 WHERE id IN ({placeholders})", internal_ids)
         conn.commit()
         conn.close()
 
@@ -291,10 +475,10 @@ class StorageManager:
         rows = cursor.fetchall()
 
         paths_to_delete = []
-        paper_ids = []
+        internal_ids = []
 
         for row in rows:
-            paper_id = row['id']
+            internal_id = row['id']
             current_source_str = row['source']
             sources = [s.strip() for s in current_source_str.split(',')]
 
@@ -302,21 +486,21 @@ class StorageManager:
                 if len(sources) == 1:
                     # Only source, delete the whole paper entry and the file
                     paths_to_delete.append(row['pdf_path'])
-                    paper_ids.append(paper_id)
-                    cursor.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+                    internal_ids.append(internal_id)
+                    cursor.execute("DELETE FROM papers WHERE id = ?", (internal_id,))
                 else:
                     # Multiple sources, just remove THIS source from the list
                     sources.remove(source)
                     new_source_str = ", ".join(sources)
-                    cursor.execute("UPDATE papers SET source = ? WHERE id = ?", (new_source_str, paper_id))
+                    cursor.execute("UPDATE papers SET source = ? WHERE id = ?", (new_source_str, internal_id))
 
         conn.commit()
         conn.close()
 
-        # Return both paths and paper IDs for comprehensive cleanup
+        # Return both paths and internal IDs for comprehensive cleanup
         result = {
             'paths': [p for p in paths_to_delete if p],
-            'paper_ids': paper_ids,
+            'internal_ids': internal_ids,
             'source': source
         }
         return result

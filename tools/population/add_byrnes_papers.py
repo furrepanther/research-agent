@@ -2,10 +2,10 @@
 Add the three corrected Byrnes papers to the database.
 """
 import os
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 import PyPDF2
+from src.storage import StorageManager
 
 def add_byrnes_papers():
     """Add the three corrected Byrnes papers"""
@@ -18,8 +18,7 @@ def add_byrnes_papers():
         r'R:\My Drive\03 Research Papers\Byrnes\"The Era of Experience" has an unsolved technical alignment problem.pdf'
     ]
     
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    storage = StorageManager(db_path)
     
     added = 0
     errors = 0
@@ -42,30 +41,27 @@ def add_byrnes_papers():
             # Get file timestamp
             file_date = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d")
             
-            # Generate ID
-            paper_id = title.replace(' ', '_').replace('"', '').replace('&', 'and').lower()[:50]
+            # Prepare data
+            paper_data = {
+                'title': title,
+                'published_date': file_date,
+                'authors': 'Steven Byrnes',
+                'abstract': '',
+                'pdf_path': filepath,
+                'source_url': '',
+                'downloaded_date': file_date,
+                'source': 'lesswrong'
+            }
             
-            # Insert into database
-            cursor.execute("""
-                INSERT OR IGNORE INTO papers (
-                    id, title, published_date, authors, abstract,
-                    pdf_path, source_url, downloaded_date, synced_to_cloud, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                paper_id,
-                title,
-                file_date,
-                'Steven Byrnes',
-                '',
-                filepath,
-                '',
-                file_date,
-                1,
-                'lesswrong'  # Byrnes papers are from LessWrong
-            ))
-            
-            added += 1
-            print(f"✓ Added: {title[:60]}... ({pages} pages)")
+            # Insert into database using StorageManager
+            new_id = storage.add_paper(paper_data)
+            if new_id:
+                added += 1
+                # Mark as synced since it's already in cloud storage
+                storage.mark_synced([new_id])
+                print(f"✓ Added: {title[:60]}... ({pages} pages) -> ID: {new_id}")
+            else:
+                print(f"- Skipped (Duplicate): {title[:60]}...")
             
         except Exception as e:
             errors += 1

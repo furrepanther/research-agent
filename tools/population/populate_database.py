@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 import PyPDF2
 import re
+from src.storage import StorageManager
+from src.utils import get_config
 
 def extract_pdf_metadata(pdf_path):
     """Extract metadata from PDF file"""
@@ -96,11 +98,7 @@ def populate_database():
     print(f"Scanning: {cloud_dir}")
     print(f"Database: {db_path}\n")
     
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    added_count = 0
-    error_count = 0
+    storage = StorageManager(db_path)
     
     # Walk through all subdirectories
     for root, dirs, files in os.walk(cloud_dir):
@@ -123,47 +121,35 @@ def populate_database():
                 error_count += 1
                 continue
             
-            # Generate unique ID from filename
-            paper_id = Path(filename).stem.replace(' ', '_').lower()
-            
             # Determine publication date (use metadata or file timestamp)
             pub_date = metadata['pub_date'] or get_file_timestamp(filepath)
-            
-            # Use publication date as downloaded_date
-            downloaded_date = pub_date
             
             # Determine source
             source = determine_source(category, filename)
             
-            # Insert into database
+            # Prepare data for StorageManager
+            paper_data = {
+                'title': metadata['title'],
+                'published_date': pub_date,
+                'authors': metadata['authors'],
+                'abstract': metadata['abstract'],
+                'pdf_path': filepath,
+                'source_url': '',  # No source URL for existing files
+                'downloaded_date': pub_date,
+                'source': source
+            }
+            
+            # Insert into database using StorageManager for consistent hashing/beautification
             try:
-                cursor.execute("""
-                    INSERT OR IGNORE INTO papers (
-                        id, title, published_date, authors, abstract,
-                        pdf_path, source_url, downloaded_date, synced_to_cloud, source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    paper_id,
-                    metadata['title'],
-                    pub_date,
-                    metadata['authors'],
-                    metadata['abstract'],
-                    filepath,
-                    '',  # No source URL for existing files
-                    downloaded_date,
-                    1,  # Already in cloud storage
-                    source
-                ))
-                
-                added_count += 1
-                print(f"  ✓ Added: {metadata['title'][:50]}...")
+                if storage.add_paper(paper_data):
+                    added_count += 1
+                    print(f"  ✓ Added: {metadata['title'][:50]}...")
+                else:
+                    print(f"  - Skipped (Duplicate): {metadata['title'][:50]}...")
                 
             except Exception as e:
                 error_count += 1
                 print(f"  ✗ Error: {e}")
-    
-    conn.commit()
-    conn.close()
     
     print(f"\n{'='*80}")
     print(f"Database Population Complete")

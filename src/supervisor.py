@@ -77,7 +77,7 @@ class Supervisor:
         try:
             rollback_result = self.storage.rollback_source(source.lower().replace(" ", ""), run_id)
             db_paths = rollback_result['paths']
-            paper_ids = rollback_result['paper_ids']
+            internal_ids = rollback_result['internal_ids']
 
             # Delete files tracked in database (PROTECTED: Never delete from cloud storage)
             deleted_count = 0
@@ -125,7 +125,7 @@ class Supervisor:
                 except Exception as e:
                     logger.warning(f"[{source}] Directory cleanup failed: {e}")
 
-            self.task_queue.put({"type": "LOG", "text": f"[{source}] Rollback complete. Deleted {len(paper_ids)} DB entries, {deleted_count} files."})
+            self.task_queue.put({"type": "LOG", "text": f"[{source}] Rollback complete. Deleted {len(internal_ids)} DB entries, {deleted_count} files."})
         except Exception as re:
             logger.error(f"[{source}] Rollback exception: {re}")
             self.task_queue.put({"type": "LOG", "text": f"[{source}] Rollback FAILED: {re}"})

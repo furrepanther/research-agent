@@ -96,35 +96,108 @@ class FilterManager:
         return errors
 
     def _parse_prompt(self, text):
+        """
+        Parse the structured prompt into required groups and exclusions.
+        Handles the format: (("A" OR "B") AND ("C" OR "D")) AND ("E" OR "F") ANDNOT ("G")
+        """
         text = text.replace('\n', ' ').strip()
         
-        # Split inclusions and exclusions
+        # 1. Extract Exclusions (everything after ANDNOT)
         parts = text.split('ANDNOT')
         include_section = parts[0].strip()
         exclude_section = parts[1].strip() if len(parts) > 1 else ""
         
-        # Parse Exclusions: Treat as a single OR group (any match = fail)
+        # User Exclusions: Extract quoted terms
         self.excluded_terms = re.findall(r'"([^"]*)"', exclude_section)
         
-        # Parse Inclusions: ("A") AND ("B" OR "C")
-        # Regex to find (...) blocks. 
-        # Note: This assumes the prompt format is strictly ("...") AND ("...")
-        group_matches = re.findall(r'\(([^)]+)\)', include_section)
+        # 2. Extract Inclusion Groups
+        # The user's query is basically a series of ( ... OR ... ) blocks joined by AND.
+        # We want to find each (...) block and treat its contents as an OR group.
         
-        if not group_matches and include_section:
-            # Simple string fallback: treated as a single OR group of all words or just the whole string?
-            # Standard: Treat the whole inclusion section as one OR group if it doesn't have parens
-            self.required_groups.append([include_section.strip('"')])
-        else:
-            for group_str in group_matches:
-                # Split by OR
-                terms = group_str.split(' OR ')
-                # Clean quotes
-                terms = [t.strip().strip('"') for t in terms]
-                self.required_groups.append(terms)
+        # Logic: Find all groups of terms separated by ' OR ' inside parentheses.
+        # We use a non-regex approach to avoid being tripped up by nested parens.
+        
+        # First, find all terms inside quotes in the include section
+        # and then group them based on proximity or the splitting structure.
+        
+        # REFINED STRATEGY: 
+        # The user's prompt is: ((G1) AND (G2)) AND (G3)
+        # We can split the include section by ' AND ' to get the major blocks.
+        # Then for each block, find the terms inside quotes.
+        
+        # Normalize and remove the top-level outer parens if they exist
+        while include_section.startswith('(') and include_section.endswith(')'):
+            # Only remove if they are truly wrapping the whole thing
+            # (Check if the open paren matches the final close paren)
+            depth = 0
+            is_wrapped = True
+            for i, char in enumerate(include_section[:-1]):
+                if char == '(': depth += 1
+                elif char == ')': depth -= 1
+                if depth == 0:
+                    is_wrapped = False
+                    break
+            if is_wrapped:
+                include_section = include_section[1:-1].strip()
+            else:
+                break
+
+        # Helper to recursively extract groups joined by AND
+        def extract_groups(section):
+            section = section.strip()
+            # Remove outer parens if they fully wrap the section
+            while section.startswith('(') and section.endswith(')'):
+                depth = 0
+                is_wrapped = True
+                for i, char in enumerate(section[:-1]):
+                    if char == '(': depth += 1
+                    elif char == ')': depth -= 1
+                    if depth == 0:
+                        is_wrapped = False
+                        break
+                if is_wrapped:
+                    section = section[1:-1].strip()
+                else:
+                    break
+            
+            # Look for top-level ANDs in this section
+            blocks = []
+            current = ""
+            depth = 0
+            idx = 0
+            found_and = False
+            while idx < len(section):
+                char = section[idx]
+                if char == '(': depth += 1
+                elif char == ')': depth -= 1
+                
+                if depth == 0 and section[idx:idx+5] == ' AND ':
+                    blocks.append(current.strip())
+                    current = ""
+                    idx += 5
+                    found_and = True
+                    continue
+                current += char
+                idx += 1
+            blocks.append(current.strip())
+            
+            if found_and:
+                # Recursively process each sub-block
+                for b in blocks:
+                    extract_groups(b)
+            else:
+                # No more ANDs? This is an OR group. Extract all quoted terms.
+                terms = re.findall(r'"([^"]*)"', section)
+                if terms:
+                    self.required_groups.append(terms)
+
+        # Start recursion
+        extract_groups(include_section)
             
         logger.info(f"Filter Configured.")
         logger.info(f"  Required Groups: {len(self.required_groups)}")
+        for i, group in enumerate(self.required_groups):
+            logger.debug(f"    Group {i+1}: {group}")
         logger.info(f"  User Exclusions: {len(self.excluded_terms)}")
         logger.info(f"  Default Exclusions: {len(self.default_exclusions)}")
 
@@ -356,7 +429,8 @@ class FilterManager:
                 return False
 
         # 6. Check Proximity (terms from different groups should be near each other)
-        if not self._check_term_proximity(content, self.required_groups, max_distance=500):
+        # Use the default max_distance (3000) defined in _check_term_proximity
+        if not self._check_term_proximity(content, self.required_groups):
             logger.debug(f"Filtered (proximity): '{title[:40]}...' terms too far apart")
             return False
 

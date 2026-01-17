@@ -28,6 +28,7 @@ def check_environment():
 check_environment()
 
 from src.utils import get_config, logger
+import threading
 from src.searchers.arxiv_searcher import ArxivSearcher
 from src.searchers.lesswrong_searcher import LessWrongSearcher
 from src.searchers.lab_scraper import LabScraper
@@ -187,10 +188,10 @@ class AgentGUI:
             mode = "BACKFILL"
             self.log_message("Backfill mode: Full historical retrieval")
             
-            # STAGING CLEANUP PROMPT
+            # STAGING CLEANUP PROMPT (Bypass for TEST mode)
             from src.utils import clear_directory
             staging_dir = config.get("staging_dir", "F:/RESTMP")
-            if os.path.exists(staging_dir) and os.listdir(staging_dir):
+            if mode != "TEST" and os.path.exists(staging_dir) and os.listdir(staging_dir):
                 from tkinter import messagebox
                 if messagebox.askyesno("Clear Staging Area?", 
                                       f"Backfill mode detected.\n\nWould you like to delete temporary files in '{staging_dir}' before starting?"):
@@ -382,7 +383,8 @@ class AgentGUI:
                     
                     # TRIGGER FINAL WORKFLOW
                     self.root.after(500, self._show_summary_window)
-                    self.root.after(1000, self._show_transfer_dialog)
+                    if self.mode == "BACKFILL":
+                        self.root.after(1000, self._show_transfer_dialog)
 
             self.root.after(100, self.process_queue)
 
@@ -461,19 +463,20 @@ class AgentGUI:
         except Exception as e:
             self.log_message(f"Error during backup: {e}")
 
+
     def open_settings(self):
         """Open settings dialog"""
 
         settings_window = tk.Toplevel(self.root)
         settings_window.title("Research Agent Settings")
-        settings_window.geometry("600x500")
+        settings_window.geometry("600x650")
         settings_window.resizable(False, False)
 
         # Center the settings window
         settings_window.update_idletasks()
         x = (settings_window.winfo_screenwidth() - 600) // 2
-        y = (settings_window.winfo_screenheight() - 500) // 2
-        settings_window.geometry(f"600x500+{x}+{y}")
+        y = (settings_window.winfo_screenheight() - 650) // 2
+        settings_window.geometry(f"600x650+{x}+{y}")
 
         # Load current config
         config = get_config()
@@ -527,32 +530,57 @@ class AgentGUI:
         path_frame = ttk.Frame(notebook, padding=20)
         notebook.add(path_frame, text="Paths")
 
-        ttk.Label(path_frame, text="Storage Path:").grid(row=0, column=0, sticky="w", pady=5)
+        # Cloud & Staging (Primary)
+        ttk.Label(path_frame, text="Primary Library (Cloud Storage)", font=("Helvetica", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
+        
+        ttk.Label(path_frame, text="Cloud Storage Path:").grid(row=1, column=0, sticky="w", pady=5)
+        cloud_path = tk.Entry(path_frame, width=50)
+        cloud_path.insert(0, config.get("cloud_storage", {}).get("path", "R:/My Drive/03 Research Papers"))
+        cloud_path.grid(row=1, column=1, sticky="w", pady=5)
+
+        ttk.Label(path_frame, text="Temporary Staging (F: Drive):").grid(row=2, column=0, sticky="w", pady=5)
+        staging_path = tk.Entry(path_frame, width=50)
+        staging_path.insert(0, config.get("staging_dir", "F:/RESTMP"))
+        staging_path.grid(row=2, column=1, sticky="w", pady=5)
+
+        # Internal Data Paths
+        ttk.Label(path_frame, text="Internal Agent Data", font=("Helvetica", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(15, 5))
+        
+        ttk.Label(path_frame, text="Data Root (Local Meta):").grid(row=4, column=0, sticky="w", pady=5)
         storage_path = tk.Entry(path_frame, width=50)
         storage_path.insert(0, config.get("storage_path", "data"))
-        storage_path.grid(row=0, column=1, sticky="w", pady=5)
+        storage_path.grid(row=4, column=1, sticky="w", pady=5)
 
-        ttk.Label(path_frame, text="Papers Directory:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(path_frame, text="Local PDF Cache:").grid(row=5, column=0, sticky="w", pady=5)
         papers_dir = tk.Entry(path_frame, width=50)
         papers_dir.insert(0, config.get("papers_dir", "data/papers"))
-        papers_dir.grid(row=1, column=1, sticky="w", pady=5)
+        papers_dir.grid(row=5, column=1, sticky="w", pady=5)
 
-        ttk.Label(path_frame, text="Database Path:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(path_frame, text="Metadata Database:").grid(row=6, column=0, sticky="w", pady=5)
         db_path = tk.Entry(path_frame, width=50)
         db_path.insert(0, config.get("db_path", "data/metadata.db"))
-        db_path.grid(row=2, column=1, sticky="w", pady=5)
+        db_path.grid(row=6, column=1, sticky="w", pady=5)
+
+        # Cloud Options
+        ttk.Label(path_frame, text="Cloud Settings", font=("Helvetica", 10, "bold")).grid(row=7, column=0, columnspan=2, sticky="w", pady=(15, 5))
+        
+        cloud_enabled = tk.BooleanVar(value=config.get("cloud_storage", {}).get("enabled", True))
+        ttk.Checkbutton(path_frame, text="Enable Cloud Protection", variable=cloud_enabled).grid(row=8, column=0, sticky="w")
+
+        cloud_check_dupes = tk.BooleanVar(value=config.get("cloud_storage", {}).get("check_duplicates", True))
+        ttk.Checkbutton(path_frame, text="Check Cloud for Duplicates", variable=cloud_check_dupes).grid(row=8, column=1, sticky="w")
         
         # Backup Directory
-        ttk.Label(path_frame, text="Backup Directory:", font=("Helvetica", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(15, 5))
-        ttk.Label(path_frame, text="Default Path:").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Label(path_frame, text="Backup Settings", font=("Helvetica", 10, "bold")).grid(row=9, column=0, columnspan=2, sticky="w", pady=(15, 5))
+        ttk.Label(path_frame, text="Backup Target:").grid(row=10, column=0, sticky="w", pady=5)
         backup_path = tk.Entry(path_frame, width=50)
         backup_path.insert(0, config.get("cloud_storage", {}).get("backup_path", ""))
-        backup_path.grid(row=4, column=1, sticky="w", pady=5)
+        backup_path.grid(row=10, column=1, sticky="w", pady=5)
         
         # Help text
-        help_text = tk.Label(path_frame, text="Note: Paths will be created automatically if they don't exist.\nRestart the application after changing paths.\nBackup path can be left empty to choose each time.", 
+        help_text = tk.Label(path_frame, text="Note: Paths will be created automatically if they don't exist.\nRestart the application after changing paths.", 
                             font=("Helvetica", 8), fg="gray", justify="left")
-        help_text.grid(row=5, column=0, columnspan=2, sticky="w", pady=(15, 0))
+        help_text.grid(row=11, column=0, columnspan=2, sticky="w", pady=(15, 0))
 
         # Tab 3: Retry Settings
         retry_frame = ttk.Frame(notebook, padding=20)
@@ -581,11 +609,19 @@ class AgentGUI:
                 config["mode_settings"]["testing"]["per_query_limit"] = int(testing_limit.get())
                 config["mode_settings"]["daily"]["max_papers_per_agent"] = int(daily_max.get())
                 config["mode_settings"]["daily"]["per_query_limit"] = int(daily_limit.get())
+                
+                backfill_max_val = backfill_max.get().strip().lower()
+                if backfill_max_val == "unlimited" or backfill_max_val == "null":
+                    config["mode_settings"]["backfill"]["max_papers_per_agent"] = None
+                else:
+                    config["mode_settings"]["backfill"]["max_papers_per_agent"] = int(backfill_max_val)
                 config["mode_settings"]["backfill"]["per_query_limit"] = int(backfill_limit.get())
                 
-                # Update path settings
-                config["staging_dir"] = staging_path.get()
+                # Update general path settings
+                config["storage_path"] = storage_path.get()
+                config["papers_dir"] = papers_dir.get()
                 config["db_path"] = db_path.get()
+                config["staging_dir"] = staging_path.get()
                 
                 # Update cloud storage settings
                 if "cloud_storage" not in config:
@@ -596,19 +632,6 @@ class AgentGUI:
                 config["cloud_storage"]["backup_path"] = backup_path.get()
                 
                 # Update retry settings
-                config["retry_settings"]["max_worker_retries"] = int(max_retries.get())
-                config["mode_settings"]["daily"]["per_query_limit"] = int(daily_limit.get())
-
-                backfill_max_val = backfill_max.get().strip().lower()
-                if backfill_max_val == "unlimited" or backfill_max_val == "null":
-                    config["mode_settings"]["backfill"]["max_papers_per_agent"] = None
-                else:
-                    config["mode_settings"]["backfill"]["max_papers_per_agent"] = int(backfill_max_val)
-
-                config["mode_settings"]["backfill"]["per_query_limit"] = int(backfill_limit.get())
-                config["storage_path"] = storage_path.get()
-                config["papers_dir"] = papers_dir.get()
-                config["db_path"] = db_path.get()
                 config["retry_settings"]["max_worker_retries"] = int(max_retries.get())
                 config["retry_settings"]["worker_timeout"] = int(worker_timeout.get())
                 config["retry_settings"]["api_max_retries"] = int(api_retries.get())

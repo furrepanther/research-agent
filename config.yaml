@@ -1,64 +1,39 @@
-# Configuration for Research Agent
-
-# General Settings
-storage_path: "F:/Antigravity_Results/Research_Papers/data"
-# Staging directory (temporary storage before transfer to cloud)
-staging_dir: "F:/RESTMP"
-
-# Cloud Storage Settings (Production Library)
+storage_path: F:/Antigravity_Results/Research_Papers/data
+staging_dir: F:/RESTMP
 cloud_storage:
   enabled: true
-  path: "R:/MyDrive/03 Research Papers"
-  check_duplicates: true  # Check cloud storage during duplicate detection
+  path: R:/My Drive/03 Research Papers
+  check_duplicates: true
   backup_enabled: true
-
-db_path: "F:/TMPRES/metadata.db"
-
-# Mode-Specific Search Settings
+  backup_path: G:\Backups\ResearchPapers
+db_path: F:/TMPRES/metadata.db
 mode_settings:
-  # Testing mode - small limits for quick verification
   testing:
-    max_papers_per_agent: 10       # Total papers per agent (hard limit)
-    per_query_limit: 5             # Papers fetched per API call/batch
-    respect_date_range: false      # Stop when limit hit, ignore dates
-  
-  # Test mode - count only, no downloads or database updates
+    max_papers_per_agent: 10
+    per_query_limit: 5
+    respect_date_range: false
   test:
-    max_papers_per_agent: 0        # No downloads
-    per_query_limit: 100           # Fetch counts only
-    respect_date_range: true       # Respect date ranges for accurate counts
-
-  # Daily mode - moderate limits for incremental updates
+    max_papers_per_agent: 0
+    per_query_limit: 100
+    respect_date_range: true
   daily:
-    max_papers_per_agent: 50       # Total papers per agent
-    per_query_limit: 20            # Papers per API call
-    respect_date_range: true       # Stop at start_date
-
-  # Backfill mode - unlimited total, small batches for stability
+    max_papers_per_agent: 50
+    per_query_limit: 20
+    respect_date_range: true
   backfill:
-    max_papers_per_agent: null     # No limit (null = unlimited)
-    per_query_limit: 10            # Smaller batches to avoid connection errors
-    respect_date_range: true       # Continue until date range satisfied
-
-# Legacy settings (deprecated, kept for backward compatibility)
+    max_papers_per_agent: null
+    per_query_limit: 10
+    respect_date_range: true
 max_results_daily: 200
 max_results_backfill: 200
-
-# Retry and Timeout Settings
 retry_settings:
-  # Supervisor/Worker settings
-  max_worker_retries: 2          # Max retries for failed workers
-  worker_retry_delay: 5          # Seconds to wait before retrying worker
-  worker_timeout: 600            # Worker timeout in seconds (10 minutes)
-
-  # API request settings
-  api_max_retries: 3             # Max retries for API calls
-  api_base_delay: 2              # Base delay for exponential backoff
-  request_pacing_delay: 1.0      # Delay between requests (rate limiting)
-
-# Export Settings
-export_dir: "F:/Antigravity_Results/Research_Papers"
-export_filename: "research_log.xlsx"
-
-# Schedule (If running as a daemon/long-running script)
-scheduled_time: "06:00" # 24-hour format
+  max_worker_retries: 2
+  worker_retry_delay: 5
+  worker_timeout: 600
+  api_max_retries: 3
+  api_base_delay: 2
+  request_pacing_delay: 1.0
+export_dir: F:/Antigravity_Results/Research_Papers
+export_filename: research_log.xlsx
+scheduled_time: 06:00
+papers_dir: data/papers

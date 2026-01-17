@@ -1,70 +1,42 @@
+```
 """
 Manually add specific files that were missed during initial population.
 """
-import os
-import sqlite3
 from datetime import datetime
+from src.storage import StorageManager
 from pathlib import Path
-import PyPDF2
+import PyPDF2 # This import is no longer used in the modified function, but kept as per instruction.
 
 def add_file_to_db(filepath, db_path):
     """Add a single file to the database"""
-    try:
-        # Extract metadata
-        with open(filepath, 'rb') as file:
-            reader = PyPDF2.PdfReader(file)
-            
-            # Get title from filename
-            title = Path(filepath).stem
-            
-            # Get file timestamp
-            file_date = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d")
-            
-            # Determine category and source
-            cloud_dir = r'R:\My Drive\03 Research Papers'
-            rel_path = os.path.relpath(os.path.dirname(filepath), cloud_dir)
-            category = rel_path if rel_path != '.' else 'Uncategorized'
-            
-            # Determine source from category
-            if 'consciousness' in category.lower():
-                source = 'arxiv'
-            else:
-                source = 'arxiv'
-            
-            # Generate ID
-            paper_id = Path(filepath).stem.replace(' ', '_').lower()[:50]
-            
-            # Insert into database
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                INSERT OR IGNORE INTO papers (
-                    id, title, published_date, authors, abstract,
-                    pdf_path, source_url, downloaded_date, synced_to_cloud, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                paper_id,
-                title,
-                file_date,
-                'Unknown',
-                '',
-                filepath,
-                '',
-                file_date,
-                1,
-                source
-            ))
-            
-            conn.commit()
-            conn.close()
-            
-            print(f"✓ Added: {title}")
-            return True
-            
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        return False
+    storage = StorageManager(db_path)
+    
+    if Path(filepath).exists(): # Changed os.path.exists to Path(filepath).exists() for consistency
+        print(f"Adding: {Path(filepath).name}") # Changed os.path.basename to Path(filepath).name
+        mtime = datetime.fromtimestamp(Path(filepath).stat().st_mtime).strftime('%Y-%m-%d') # Changed os.path.getmtime to Path(filepath).stat().st_mtime
+        
+        paper_data = {
+            'title': Path(filepath).stem,
+            'published_date': mtime,
+            'authors': 'Unknown',
+            'abstract': '',
+            'pdf_path': filepath,
+            'source_url': '',
+            'downloaded_date': mtime,
+            'source': 'arxiv'
+        }
+        
+        new_id = storage.add_paper(paper_data)
+        if new_id:
+            storage.mark_synced([new_id])
+            print(f"✓ Added: {paper_data['title']} -> ID: {new_id}")
+            return True # Added return True here as the original function returned True on success
+        else:
+            print("- Paper already exists or failed to add.")
+            return False # Added return False here for consistency
+    else:
+        print(f"MISSING ON DISK: {filepath}")
+        return False # Added return False here for consistency
 
 # Add KannsasJackson.pdf
 db_path = r'R:\My Drive\03 Research Papers\metadata.db'

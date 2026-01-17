@@ -9,7 +9,7 @@ import multiprocessing
 import traceback
 import os
 from datetime import datetime
-from src.utils import get_config, logger
+from src.utils import get_config, logger, to_title_case
 from src.filter import FilterManager
 from src.storage import StorageManager
 
@@ -184,6 +184,10 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
         duplicate_count = 0   # Papers skipped because they already exist
         papers_to_download = kept[:int(max_papers_per_agent)] if max_papers_per_agent != float('inf') else kept
 
+        # Beautify all papers before processing
+        for p in papers_to_download:
+            p['title'] = to_title_case(p.get('title', ''))
+
         for i, paper in enumerate(papers_to_download):
             if stop_event and stop_event.is_set():
                 break
@@ -196,9 +200,6 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
                 })
                 break
 
-            # Check for duplicates before downloading
-            paper_id = paper.get('id')
-            
             # 1. Check cloud storage first (if enabled)
             from src.cloud_transfer import CloudTransferManager
             from src.utils import sanitize_filename
@@ -227,9 +228,10 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
                         "details": f"New: {downloaded_count}, Duplicates: {duplicate_count}"
                     })
                 continue
-            
+
             # 2. Check database for duplicates
-            if paper_id and storage.paper_exists(paper_id):
+            source_url = paper.get('source_url') or paper.get('pdf_url')
+            if source_url and storage.paper_exists(source_url=source_url):
                 duplicate_count += 1
                 task_queue.put({
                     "type": "LOG",

@@ -2,19 +2,15 @@
 Validate and add Red Teaming PDFs to database.
 """
 import os
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 import PyPDF2
+from src.storage import StorageManager
 
 db_path = r'R:\My Drive\03 Research Papers\metadata.db'
 red_teaming_dir = r'R:\My Drive\03 Research Papers\Red Teaming'
 
-# Get existing files in database
-conn = sqlite3.connect(db_path)
-cursor = conn.cursor()
-cursor.execute("SELECT pdf_path FROM papers")
-existing_files = set(row[0] for row in cursor.fetchall())
+storage = StorageManager(db_path)
 
 print("="*80)
 print("RED TEAMING PDF VALIDATION")
@@ -30,11 +26,6 @@ for filename in os.listdir(red_teaming_dir):
     
     filepath = os.path.join(red_teaming_dir, filename)
     
-    # Skip if already in database
-    if filepath in existing_files:
-        print(f"⊙ Already in DB: {filename[:60]}")
-        continue
-    
     print(f"\nTesting: {filename[:70]}")
     
     try:
@@ -46,40 +37,32 @@ for filename in os.listdir(red_teaming_dir):
         print(f"  ✓ Readable ({pages} pages)")
         readable += 1
         
-        # Add to database
+        # Add to database using StorageManager
         title = Path(filepath).stem
         file_date = datetime.fromtimestamp(os.path.getmtime(filepath)).strftime("%Y-%m-%d")
-        paper_id = title.replace(' ', '_').replace('-', '_').lower()[:50]
         
-        cursor.execute("""
-            INSERT OR IGNORE INTO papers (
-                id, title, published_date, authors, abstract,
-                pdf_path, source_url, downloaded_date, synced_to_cloud, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            paper_id,
-            title,
-            file_date,
-            'Unknown',
-            '',
-            filepath,
-            '',
-            file_date,
-            1,
-            'arxiv'  # Red teaming papers
-        ))
+        paper_data = {
+            'title': title,
+            'published_date': file_date,
+            'authors': 'Unknown',
+            'abstract': '',
+            'pdf_path': filepath,
+            'source_url': '',
+            'downloaded_date': file_date,
+            'source': 'arxiv'
+        }
         
-        added += 1
-        print(f"  ✓ Added to database")
+        new_id = storage.add_paper(paper_data)
+        if new_id:
+            storage.mark_synced([new_id])
+            added += 1
+            print(f"  ✓ Added to database -> ID: {new_id}")
+        else:
+            print("  ⊙ Already in DB or failed to add.")
         
     except Exception as e:
         errors += 1
         print(f"  ✗ Error: {str(e)[:60]}")
-
-conn.commit()
-cursor.execute("SELECT COUNT(*) FROM papers")
-total = cursor.fetchone()[0]
-conn.close()
 
 print(f"\n{'='*80}")
 print("SUMMARY")

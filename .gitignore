@@ -1,22 +1,12 @@
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
+*.pyc
+*.pyo
 venv/
 .env
-
-# Project specific
-data/metadata.db
-research_agent.log
-research_agent.log.*
+.DS_Store
+*.log
+metadata.db
+data/
 F:/RESTMP/
-R:/MyDrive/
-
-# IDE
-.vscode/
-.claude/
-.idea/
-
-# OS
-desktop.ini
-Thumbs.db
+*.lnk
+metadata_findings*.json

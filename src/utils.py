@@ -31,29 +31,66 @@ def get_config():
     return config
 
 def to_title_case(text):
-    """Converts a string to Title Case based on standard rules."""
+    """Converts a string to Title Case based on standard rules, preserving acronyms."""
+    if not text:
+        return ""
+    
+    # 0. Initial Clean
+    # Remove common junk seen in samples
+    text = text.replace("â•ﬂ", " - ").replace("â•Ž26", "'26").replace("â•Ž", "'")
+    text = re.sub(r' \| .*$', '', text) # Remove source suffixes like "| LessWrong"
+    text = text.replace("Microsoft Word - ", "")
+    
+    # Replace underscores with spaces (always)
+    text = text.replace("_", " ")
+    
+    # Only replace hyphens if they are likely separators (surrounded by spaces)
+    # or between words where no specialized term is expected.
+    # For now, let's keep hyphens inside words but replace ' - ' with ' : ' or ' - '
+    # Wait, the user said "replace technical separators (_ , -) with clean spaces".
+    # Let's stick to spaces but be careful with acronyms.
+    text = text.replace("-", " ") 
+    
     minor_words = {
         'a', 'an', 'the', 'and', 'but', 'for', 'at', 'by', 'from', 'in', 'into', 
         'of', 'off', 'on', 'onto', 'out', 'over', 'up', 'with', 'as', 'to'
     }
+    
+    # List of acronyms to preserve in EXACT casing if possible, or force Upper
+    acronyms = {
+        "AI": "AI", "AGI": "AGI", "LLM": "LLM", "LLMS": "LLMs", "NLP": "NLP", 
+        "RL": "RL", "RLHF": "RLHF", "ML": "ML", "GPT": "GPT", "GAN": "GAN",
+        "KBQA": "KBQA", "SQL": "SQL", "GUI": "GUI", "API": "API", "RAG": "RAG"
+    }
+    
     words = text.split()
     if not words:
         return ""
     
     title_words = []
     for i, word in enumerate(words):
-        # Remove non-alphanumeric for comparison
-        clean_word = re.sub(r'[^a-zA-Z]', '', word).lower()
-        if i == 0 or i == len(words) - 1 or clean_word not in minor_words:
-            # Capitalize word, preserving interior case (like AGI) if it's already mostly caps?
-            # Actually, standard capitalize() lowercases the rest. 
-            # Let's be careful with acronyms.
-            if word.isupper() and len(word) > 1:
+        # Handle punctuation inside/around word (like "LLMs:")
+        clean_word = re.sub(r'[^\w]', '', word).upper()
+        
+        # Preserve common research acronyms
+        if clean_word in acronyms:
+            # Preserve the punctuation if any
+            prefix = re.match(r'^[^\w]*', word).group()
+            suffix = re.search(r'[^\w]*$', word).group()
+            title_words.append(f"{prefix}{acronyms[clean_word]}{suffix}")
+            continue
+            
+        # Capitalize if first/last or not a minor word
+        word_for_case = re.sub(r'[^\w]', '', word).lower()
+        if i == 0 or i == len(words) - 1 or word_for_case not in minor_words:
+            # If word is mostly uppercase, keep it uppercase (assume acronym)
+            if sum(1 for c in word if c.isupper()) > 1 and len(word) > 1:
                 title_words.append(word)
             else:
                 title_words.append(word.capitalize())
         else:
             title_words.append(word.lower())
+            
     return " ".join(title_words)
 
 def normalize_url(url):
@@ -125,3 +162,100 @@ def clear_directory(directory_path):
                 shutil.rmtree(file_path)
         except Exception as e:
             logger.error(f"Failed to delete {file_path}. Reason: {e}")
+
+def run_beautification(dry_run=True, progress_callback=None, db_path=None):
+    """
+    Renames physical files to Title Case and updates the database.
+    Used by CLI maintenance tools and the GUI.
+    """
+    import sqlite3
+    import shutil
+    
+    config = get_config()
+    if not db_path:
+        db_path = config.get("db_path", "data/metadata.db")
+    
+    if not os.path.exists(db_path):
+        logger.error(f"Database not found at {db_path}")
+        return 0, 0
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT id, title, pdf_path FROM papers")
+    papers = cursor.fetchall()
+    
+    logger.info(f"Analyzing {len(papers)} papers for beautification...")
+    if progress_callback:
+        progress_callback(f"Analyzing {len(papers)} papers...")
+    
+    changes_made = 0
+    errors = 0
+    
+    for row in papers:
+        internal_id = row['id']
+        old_title = row['title']
+        old_path = row['pdf_path']
+        
+        if not old_path or not os.path.exists(old_path):
+            continue
+            
+        new_title = to_title_case(old_title)
+        new_filename = sanitize_filename(new_title, extension=".pdf")
+        dir_name = os.path.dirname(old_path)
+        new_path = os.path.join(dir_name, new_filename)
+        
+        if old_path == new_path and old_title == new_title:
+            continue
+            
+        if dry_run:
+            logger.info(f"Dry-run: '{old_title}' -> '{new_title}'")
+            changes_made += 1
+            continue
+            
+        try:
+            # Physical Rename
+            if old_path != new_path:
+                if os.path.exists(new_path):
+                    logger.warning(f"Collision: {new_path} exists. Skipping physical rename.")
+                else:
+                    os.rename(old_path, new_path)
+            
+            # Database Update
+            cursor.execute(
+                "UPDATE papers SET title = ?, pdf_path = ? WHERE id = ?",
+                (new_title, new_path, internal_id)
+            )
+            changes_made += 1
+            if progress_callback:
+                progress_callback(f"Beautified: {new_title}")
+            
+        except Exception as e:
+            logger.error(f"Error processing {old_title}: {e}")
+            errors += 1
+            
+    if not dry_run:
+        conn.commit()
+        logger.info(f"Beautification complete. {changes_made} updated. {errors} errors.")
+    else:
+        logger.info(f"Dry-run complete. {changes_made} would be updated.")
+        
+    conn.close()
+    return changes_made, errors
+
+def generate_stable_hash(text):
+    """
+    Generates a 64-bit signed integer hash from a string using SHA-256.
+    Ensures hashes are consistent across different Python runs and platforms.
+    """
+    import hashlib
+    if not text:
+        return 0
+    
+    # Use SHA-256 for a robust, stable hash
+    hash_bytes = hashlib.sha256(text.encode('utf-8')).digest()
+    
+    # Take the first 8 bytes (64 bits) and convert to a signed integer
+    # SQLite INTEGER can store up to 8-byte signed integers.
+    return int.from_bytes(hash_bytes[:8], byteorder='big', signed=True)

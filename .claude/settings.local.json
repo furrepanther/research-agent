@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python main.py:*)",
+      "Bash(dir:*)",
+      "Bash(sqlite3:*)",
+      "Bash(python:*)",
+      "Bash(timeout 60 python:*)",
+      "Bash(taskkill:*)",
+      "Bash(findstr:*)",
+      "Bash(ps:*)",
+      "Bash(git add:*)",
+      "Bash(tasklist:*)",
+      "Bash(powershell \"Get-Process | Where-Object {$_ProcessName -like ''*python*''} | Select-Object Id,ProcessName,StartTime | Format-Table\")"
+    ]
+  }
+}

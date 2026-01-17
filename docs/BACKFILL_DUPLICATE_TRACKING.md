@@ -18,12 +18,12 @@ Implemented mode-specific duplicate tracking that ONLY applies during BACKFILL m
 ```python
 # Check for duplicates before downloading
 # 1. Check Cloud Storage first
-if cloud_storage.check_duplicates(paper_id):
+if cloud_storage.check_duplicates(source_url):
     duplicate_count += 1
     is_cloud_duplicate = True
 
 # 2. Check Database second
-elif storage.paper_exists(paper_id):
+elif storage.paper_exists(source_url=source_url):
     duplicate_count += 1
 
 # ONLY in BACKFILL mode: count duplicates toward progress
@@ -87,7 +87,7 @@ Manual verification:
 
 **Duplicate Count Tracking**:
 - Separate `duplicate_count` variable maintains count of skipped papers
-- Only incremented when `storage.paper_exists(paper_id)` returns True
+- Only incremented when `storage.paper_exists(source_url=source_url)` returns True
 - Independent of `downloaded_count` which tracks successfully added papers
 
 **Progress Percentage**:
