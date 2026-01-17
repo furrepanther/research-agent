@@ -1,0 +1,1 @@
+("AI" OR "LLM" OR "language model" OR "neural network" OR "deep learning" OR "transformer") AND ("safety" OR "alignment" OR "adversarial" OR "robust" OR "attack" OR "defense" OR "interpretability" OR "fairness" OR "bias" OR "ethics") ANDNOT ("automotive" OR "medical" OR "cancer")

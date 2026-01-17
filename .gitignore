@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Project specific
+data/metadata.db
+research_agent.log
+research_agent.log.*
+F:/RESTMP/
+R:/MyDrive/
+
+# IDE
+.vscode/
+.claude/
+.idea/
+
+# OS
+desktop.ini
+Thumbs.db

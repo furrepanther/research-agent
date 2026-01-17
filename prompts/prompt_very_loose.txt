@@ -1,0 +1,1 @@
+("AI" OR "LLM" OR "neural" OR "model" OR "learning") ANDNOT ("automotive" OR "medical" OR "cancer" OR "tumor")

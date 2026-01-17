@@ -4,13 +4,18 @@ import os
 import re
 from datetime import datetime, timezone
 from src.utils import sanitize_filename
+from src.classifier import classify_paper
 from bs4 import BeautifulSoup
 
 class LessWrongSearcher(BaseSearcher):
     def __init__(self, config):
         super().__init__(config)
         self.source_name = "lesswrong"
-        self.download_dir = os.path.join(config.get("papers_dir", "data/papers"), self.source_name)
+        
+        # Prefer staging dir if configured, otherwise use papers_dir
+        base_dir = config.get("staging_dir", config.get("papers_dir", "data/papers"))
+        self.download_dir = base_dir
+        
         os.makedirs(self.download_dir, exist_ok=True)
         self.api_url = "https://www.lesswrong.com/graphql"
 
@@ -68,6 +73,48 @@ class LessWrongSearcher(BaseSearcher):
             return []
 
         results = []
+        
+        # Define strict taxonomy keywords (matching ArXiv query)
+        required_keywords = [
+            "agentic", "ai safety", "ai alignment", "consciousness", 
+            "personhood", "persona", "future ai", "red team", "red teaming", 
+            "taxonomy", "alignment", "safety"
+        ]
+        
+        # Trusted authors/organizations (known for quality AI safety content)
+        # This list focuses on established researchers, organizations, and recognized contributors
+        trusted_authors = [
+            # Organizations & Labs
+            "Anthropic", "OpenAI", "DeepMind", "Alignment Research Center", 
+            "MIRI", "Machine Intelligence Research Institute", "Redwood Research",
+            "AI Safety Camp", "Center for AI Safety", "FAR AI",
+            
+            # Established Researchers & Authors
+            "Eliezer Yudkowsky", "Paul Christiano", "Rohin Shah", "Buck Shlegeris",
+            "Evan Hubinger", "Chris Olah", "Ajeya Cotra", "Holden Karnofsky",
+            "Nate Soares", "Scott Alexander", "Zvi Mowshowitz", "Gwern",
+            "Jacob Steinhardt", "Dan Hendrycks", "Ethan Perez", "Sam Bowman",
+            "Owain Evans", "Stuart Russell", "Max Tegmark", "Nick Bostrom",
+            "Katja Grace", "Daniel Kokotajlo", "Richard Ngo", "Victoria Krakovna",
+            "Jan Leike", "John Wentworth", "Vanessa Kosoy", "Abram Demski",
+            "Scott Garrabrant", "Alex Turner", "Quintin Pope", "Neel Nanda",
+            "Steven Byrnes",
+            
+            # Emerging Authors (reputation built 2023-2026)
+            "Lucius Bushnaq", "Marius Hobbhahn", "Fabien Roger", "Lawrence Chan",
+            "Jérémy Scheurer", "Ethan Perez", "Nina Rimsky", "Cody Rushing",
+            "Garrett Baker", "Mrinank Sharma", "Jared Kaplan", "Sam Marks",
+            "Bilal Chughtai", "Adrià Garriga-Alonso", "Nora Belrose", "Curt Tigges",
+            "Joseph Miller", "Evan Miyazono", "Akbir Khan", "Jared Quincy Davis",
+            
+            # Community Contributors (high karma/quality)
+            "habryka", "Oliver Habryka", "Raemon", "Ben Pace", "Ruby",
+            "Wei Dai", "Kaj Sotala", "Anna Salamon", "Andrew Critch"
+        ]
+        
+        # Convert to lowercase for case-insensitive matching
+        trusted_authors_lower = [author.lower() for author in trusted_authors]
+        
         for post in posts:
             if stop_event and stop_event.is_set():
                 break
@@ -78,6 +125,34 @@ class LessWrongSearcher(BaseSearcher):
             # Safe access with null checks
             html_body = post.get('htmlBody') if isinstance(post, dict) else None
             if not html_body:
+                continue
+            
+            # Get title for filtering
+            title = post.get('title', '').lower() if isinstance(post, dict) else ''
+            
+            # STRICT FILTERING: Check if title or abstract contains taxonomy keywords
+            try:
+                soup = BeautifulSoup(html_body, 'html.parser')
+                abstract_text = soup.get_text()[:2000].lower()  # First 2000 chars for filtering
+            except:
+                abstract_text = ""
+            
+            # Combined text for keyword matching
+            combined_text = f"{title} {abstract_text}"
+            
+            # Must contain at least one taxonomy keyword
+            if not any(keyword in combined_text for keyword in required_keywords):
+                continue
+            
+            # Author - safe access (moved up for filtering)
+            user_obj = post.get('user') if isinstance(post, dict) else None
+            author = "Unknown"
+            if user_obj and isinstance(user_obj, dict):
+                author = user_obj.get('displayName', 'Unknown')
+            
+            # TRUSTED AUTHOR FILTER: Only include posts from trusted sources
+            author_lower = author.lower()
+            if not any(trusted_author in author_lower for trusted_author in trusted_authors_lower):
                 continue
             
             # Date Parsing
@@ -97,30 +172,24 @@ class LessWrongSearcher(BaseSearcher):
                 if pub_date and pub_date < start_date:
                     continue
 
-            # Author - safe access
-            user_obj = post.get('user') if isinstance(post, dict) else None
-            author = "Unknown"
-            if user_obj and isinstance(user_obj, dict):
-                author = user_obj.get('displayName', 'Unknown')
-
-            # Abstract (First 500 chars of body text)
+            # Full abstract for storage
             try:
                 soup = BeautifulSoup(html_body, 'html.parser')
-                abstract_text = soup.get_text()[:1000] + "..."
+                abstract_text_full = soup.get_text()[:1000] + "..."
             except:
-                abstract_text = "Content unavailable"
+                abstract_text_full = "Content unavailable"
 
             # Safe field access
             post_id = post.get('_id', 'unknown')
-            title = post.get('title', 'Untitled')
+            title_original = post.get('title', 'Untitled')
             page_url = post.get('pageUrl', '')
 
             paper_meta = {
                 'id': post_id,
-                'title': title,
+                'title': title_original,
                 'published_date': (posted_at.split('T')[0] if posted_at else "Unknown") if isinstance(posted_at, str) else "Unknown",
                 'authors': author,
-                'abstract': abstract_text,
+                'abstract': abstract_text_full,
                 'source_url': page_url,
                 'pdf_url': None,
                 'html_content': html_body,
@@ -134,7 +203,7 @@ class LessWrongSearcher(BaseSearcher):
                 
             results.append(paper_meta)
             
-        self.logger.info(f"Fetched {len(results)} potential posts from LessWrong.")
+        self.logger.info(f"Fetched {len(results)} filtered posts from LessWrong (from {len(posts)} total).")
         return results
 
     def download(self, paper_meta):
@@ -144,8 +213,16 @@ class LessWrongSearcher(BaseSearcher):
             return None
             
         # Clean title for filename - Title Case, no underscores, Windows safe
-        filename = sanitize_filename(paper_meta['title'])
-        filepath = os.path.join(self.download_dir, filename)
+        filename = sanitize_filename(paper_meta['title'], extension=".pdf")
+        
+        # CATEGORIZATION
+        category = classify_paper(paper_meta['title'], paper_meta.get('abstract', ''), paper_meta.get('authors', 'Unknown'))
+        category_safe = sanitize_filename(category, extension="")
+        
+        save_dir = os.path.join(self.download_dir, category_safe)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        filepath = os.path.join(save_dir, filename)
         
         if os.path.exists(filepath):
             self.logger.info(f"File already exists: {filepath}")

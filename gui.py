@@ -1,9 +1,42 @@
-import tkinter as tk
-from tkinter import ttk
+import os
+import sys
 import multiprocessing
 import time
-import sys
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+
+# --- ENVIRONMENT VALIDATION ---
+def check_environment():
+    """Ensure the script is running in the project virtual environment"""
+    executable = sys.executable.lower()
+    expected_venv = os.path.join(os.getcwd(), "venv")
+    
+    if "venv" not in executable and os.path.exists(expected_venv):
+        try:
+            # We use a temporary root just for the error box
+            temp_root = tk.Tk()
+            temp_root.withdraw()
+            messagebox.showerror("Wrong Environment Detected", 
+                        f"You are running the agent with the wrong Python interpreter:\n{sys.executable}\n\n"
+                        "Please launch the agent using 'run_gui.bat' to ensure the virtual environment is used.")
+            temp_root.destroy()
+        except:
+            print(f"\n[ERROR] WRONG ENVIRONMENT: Please run with 'run_gui.bat' or activate the venv first.")
+        sys.exit(1)
+
+# Run check before other imports
+check_environment()
+
 from src.utils import get_config, logger
+from src.searchers.arxiv_searcher import ArxivSearcher
+from src.searchers.lesswrong_searcher import LessWrongSearcher
+from src.searchers.lab_scraper import LabScraper
+from src.supervisor import Supervisor
+from src.storage import StorageManager
+from src.cloud_transfer import CloudTransferManager
+from src.backup import BackupManager
+from src.summary_window import SummaryWindow
+import yaml
 
 class AgentGUI:
     def __init__(self, root, task_queue):
@@ -52,20 +85,31 @@ class AgentGUI:
             item_id = self.tree.insert("", "end", values=(src, "Waiting", "0", "-"))
             self.row_ids[src] = item_id
 
-        # Animation Canvas (Throbber)
-        self.canvas = tk.Canvas(root, width=50, height=50, bg="#f0f0f0", highlightthickness=0)
-        self.canvas.pack(pady=10)
-        self.spinner_angle = 0
-        self.is_running = True
-        self.animate()
-        
+
         # Log Area (Integrated scrollable text)
         log_frame = tk.LabelFrame(root, text="Agent Logs", bg="#f0f0f0", font=("Helvetica", 10, "bold"))
         log_frame.pack(pady=10, padx=20, fill="both", expand=True)
         
-        from tkinter import scrolledtext
         self.log_area = scrolledtext.ScrolledText(log_frame, height=8, font=("Consolas", 9), state=tk.DISABLED, bg="#ffffff")
         self.log_area.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Mode Selector
+        mode_frame = tk.Frame(root, bg="#f0f0f0", pady=5)
+        mode_frame.pack()
+        
+        tk.Label(mode_frame, text="Run Mode:", bg="#f0f0f0", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=(20, 5))
+        
+        self.mode_var = tk.StringVar(value="Automatic")
+        mode_dropdown = ttk.Combobox(mode_frame, textvariable=self.mode_var, 
+                                     values=["Automatic", "Test", "Backfill"],
+                                     state="readonly", width=15, font=("Helvetica", 10))
+        mode_dropdown.pack(side=tk.LEFT, padx=5)
+        
+        # Mode descriptions
+        mode_help = tk.Label(mode_frame, 
+                            text="Automatic: Uses latest DB date | Test: Count only, no downloads | Backfill: Full historical",
+                            bg="#f0f0f0", font=("Helvetica", 8), fg="gray")
+        mode_help.pack(side=tk.LEFT, padx=10)
         
         self.lbl_status = tk.Label(root, text="Ready...", bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
@@ -82,6 +126,12 @@ class AgentGUI:
 
         self.btn_settings = tk.Button(btn_frame, text="Settings", command=self.open_settings, bg="#34495e", fg="white", font=("Helvetica", 10, "bold"), width=15)
         self.btn_settings.pack(side=tk.LEFT, padx=10)
+        
+        self.btn_backup = tk.Button(btn_frame, text="Backup", command=self.create_backup, bg="#16a085", fg="white", font=("Helvetica", 10, "bold"), width=15)
+        self.btn_backup.pack(side=tk.LEFT, padx=10)
+        
+        self.btn_quit = tk.Button(btn_frame, text="Quit", command=self.quit_app, bg="#7f8c8d", fg="white", font=("Helvetica", 10, "bold"), width=15)
+        self.btn_quit.pack(side=tk.LEFT, padx=10)
 
         # Keyboard shortcuts
         self.root.bind('<Return>', lambda e: self.start_agent() if self.btn_start['state'] == tk.NORMAL else None)
@@ -108,32 +158,48 @@ class AgentGUI:
         self.btn_stop.config(state=tk.NORMAL)
         self.is_running = True
         self.root.config(cursor="watch")  # Busy cursor
-        self.animate()
         
         # Reset Tree
         for src in self.sources:
             self.tree.item(self.row_ids[src], values=(src, "Waiting", "0", "-"))
         
         # Load prompt
-        with open("prompt.txt", "r") as f:
+        with open("prompts/prompt.txt", "r") as f:
             prompt = f.read().strip()
         
-        # Import searchers and Supervisor
-        from src.searchers.arxiv_searcher import ArxivSearcher
-        # from src.searchers.semantic_searcher import SemanticSearcher  # DISABLED
-        from src.searchers.lesswrong_searcher import LessWrongSearcher
-        from src.searchers.lab_scraper import LabScraper
-        from src.supervisor import Supervisor
-        from src.storage import StorageManager
+        # Import searchers and Supervisor (Now moved to top)
         
-        # Determine Mode
+        # Determine Mode from dropdown
         config = get_config()
         storage = StorageManager(config.get("db_path", "data/metadata.db"))
-        latest_date_str = storage.get_latest_date()
-        mode = "DAILY" if latest_date_str else "BACKFILL"
+        
+        selected_mode = self.mode_var.get()
+        
+        if selected_mode == "Automatic":
+            # Automatic: detect based on database
+            latest_date_str = storage.get_latest_date()
+            mode = "DAILY" if latest_date_str else "BACKFILL"
+            self.log_message(f"Automatic mode: Detected {mode} (latest date: {latest_date_str or 'None'})")
+        elif selected_mode == "Test":
+            mode = "TEST"
+            self.log_message("Test mode: Count only, no downloads or database updates")
+        else:  # Backfill
+            mode = "BACKFILL"
+            self.log_message("Backfill mode: Full historical retrieval")
+            
+            # STAGING CLEANUP PROMPT
+            from src.utils import clear_directory
+            staging_dir = config.get("staging_dir", "F:/RESTMP")
+            if os.path.exists(staging_dir) and os.listdir(staging_dir):
+                from tkinter import messagebox
+                if messagebox.askyesno("Clear Staging Area?", 
+                                      f"Backfill mode detected.\n\nWould you like to delete temporary files in '{staging_dir}' before starting?"):
+                    self.log_message(f"Clearing staging directory: {staging_dir}")
+                    clear_directory(staging_dir)
+                    self.log_message("Staging area cleared.")
+        
         self.mode = mode  # Store mode for later reference (summary window)
         self.root.title(f"Research Agent Status - {mode} Mode")
-        self.log_message(f"Detected search mode: {mode}")
 
         # Get mode-specific settings
         from datetime import datetime
@@ -167,7 +233,6 @@ class AgentGUI:
 
         workers = [
             (ArxivSearcher, "ArXiv"),
-            # (SemanticSearcher, "Semantic Scholar"),  # DISABLED: Low success rate (~8%) due to missing PDF URLs
             (LessWrongSearcher, "LessWrong"),
             (LabScraper, "AI Labs")
         ]
@@ -185,20 +250,57 @@ class AgentGUI:
         self.lbl_status.config(text="Stopping...")
         self.btn_stop.config(state=tk.DISABLED, text="Stopping...")
 
-    def animate(self):
-        if not self.is_running:
-            return
-        self.canvas.delete("all")
-        # Draw spinner
-        x, y, r = 25, 25, 15
-        end_angle = self.spinner_angle + 90
-        # Check if actually running to show distinct state or just idle
-        active = self.supervisor.is_any_alive() if self.supervisor else False
-        color = "#3498db" if active else "#bdc3c7"
+    def quit_app(self):
+        """Quit application with comprehensive cleanup"""
+        from tkinter import messagebox
         
-        self.canvas.create_arc(x-r, y-r, x+r, y+r, start=self.spinner_angle, extent=90, style=tk.ARC, outline=color, width=4)
-        self.spinner_angle = (self.spinner_angle + 10) % 360
-        self.root.after(50, self.animate)
+        # Confirm quit
+        is_running = hasattr(self, 'is_running') and self.is_running
+        if is_running:
+            if not messagebox.askyesno("Quit?", "Agent is running. Stop and quit?"):
+                return
+        else:
+            if not messagebox.askyesno("Quit", "Are you sure you want to quit?"):
+                return
+        
+        # Stop agent if running
+        if is_running:
+            self.stop_agent()
+            # Give processes a moment to stop
+            self.root.after(500, self._finish_quit)
+        else:
+            self._finish_quit()
+    
+    def _finish_quit(self):
+        """Complete the quit process after stopping workers"""
+        import sys
+        import os
+        
+        # Close progress window if it exists
+        if hasattr(self, 'progress_window') and self.progress_window:
+            try:
+                self.progress_window.destroy()
+            except:
+                pass
+        
+        # Terminate supervisor processes
+        if hasattr(self, 'supervisor') and self.supervisor:
+            try:
+                for worker_name, worker_info in self.supervisor.workers.items():
+                    proc = worker_info.get('process')
+                    if proc and proc.is_alive():
+                        proc.terminate()
+            except:
+                pass
+        
+        # Destroy window
+        try:
+            self.root.destroy()
+        except:
+            pass
+        
+        # Force exit
+        os._exit(0)
 
     def process_queue(self):
         try:
@@ -253,6 +355,10 @@ class AgentGUI:
 
                         # Always open summary window after completion
                         self._show_summary_window()
+                        
+                        # BACKFILL MODE: Ask to transfer to cloud storage
+                        if hasattr(self, 'mode') and self.mode == "BACKFILL":
+                            self._show_transfer_dialog()
 
                     self.btn_start.config(state=tk.NORMAL)
                     self.btn_stop.config(state=tk.DISABLED, text="Cancel Run")
@@ -267,17 +373,22 @@ class AgentGUI:
             # Check if all workers are done
             if self.supervisor and not self.supervisor.is_any_alive():
                 if self.is_running:  # Haven't sent DONE yet
+                    self.is_running = False # Mark as stopped
+                    self.btn_start.config(state=tk.NORMAL)
+                    self.btn_stop.config(state=tk.DISABLED)
+                    self.root.config(cursor="")
+                    
                     self.task_queue.put({"type": "DONE"})
+                    
+                    # TRIGGER FINAL WORKFLOW
+                    self.root.after(500, self._show_summary_window)
+                    self.root.after(1000, self._show_transfer_dialog)
 
             self.root.after(100, self.process_queue)
 
     def _show_summary_window(self):
         """Open summary window with newly downloaded papers"""
         try:
-            from src.summary_window import SummaryWindow
-            from src.storage import StorageManager
-            from src.utils import get_config
-
             config = get_config()
             storage = StorageManager(config.get("db_path", "data/metadata.db"))
 
@@ -303,11 +414,55 @@ class AgentGUI:
                 self.log_message("No new papers to display.")
         except Exception as e:
             self.log_message(f"Error opening summary window: {e}")
+    
+    def _show_transfer_dialog(self):
+        """Ask user if they want to transfer files to cloud storage"""
+        
+        try:
+            result = messagebox.askyesno(
+                "Commit Changes?",
+                "Commit files and database changes? (this cannot be undone)\n\n"
+                "This will move papers from F:\\RESTMP to R:\\MyDrive\\03 Research Papers.",
+                icon='warning'
+            )
+            
+            if result:
+                self.log_message("Starting cloud transfer...")
+                config = get_config()
+                transfer_mgr = CloudTransferManager(config)
+                
+                success = transfer_mgr.transfer_folders()
+                
+                if success:
+                    self.log_message("Cloud transfer complete!")
+                else:
+                    self.log_message("Cloud transfer cancelled or failed")
+            else:
+                self.log_message("Cloud transfer skipped")
+                
+        except Exception as e:
+            self.log_message(f"Error during transfer: {e}")
+    
+    def create_backup(self):
+        """Create a backup of cloud storage"""
+        
+        try:
+            self.log_message("Creating backup...")
+            config = get_config()
+            backup_mgr = BackupManager(config)
+            
+            backup_path = backup_mgr.create_backup()
+            
+            if backup_path:
+                self.log_message(f"Backup created: {backup_path}")
+            else:
+                self.log_message("Backup cancelled")
+                
+        except Exception as e:
+            self.log_message(f"Error during backup: {e}")
 
     def open_settings(self):
         """Open settings dialog"""
-        from tkinter import messagebox
-        import yaml
 
         settings_window = tk.Toplevel(self.root)
         settings_window.title("Research Agent Settings")
@@ -386,6 +541,18 @@ class AgentGUI:
         db_path = tk.Entry(path_frame, width=50)
         db_path.insert(0, config.get("db_path", "data/metadata.db"))
         db_path.grid(row=2, column=1, sticky="w", pady=5)
+        
+        # Backup Directory
+        ttk.Label(path_frame, text="Backup Directory:", font=("Helvetica", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(15, 5))
+        ttk.Label(path_frame, text="Default Path:").grid(row=4, column=0, sticky="w", pady=5)
+        backup_path = tk.Entry(path_frame, width=50)
+        backup_path.insert(0, config.get("cloud_storage", {}).get("backup_path", ""))
+        backup_path.grid(row=4, column=1, sticky="w", pady=5)
+        
+        # Help text
+        help_text = tk.Label(path_frame, text="Note: Paths will be created automatically if they don't exist.\nRestart the application after changing paths.\nBackup path can be left empty to choose each time.", 
+                            font=("Helvetica", 8), fg="gray", justify="left")
+        help_text.grid(row=5, column=0, columnspan=2, sticky="w", pady=(15, 0))
 
         # Tab 3: Retry Settings
         retry_frame = ttk.Frame(notebook, padding=20)
@@ -409,10 +576,27 @@ class AgentGUI:
         # Save button
         def save_settings():
             try:
-                # Update config
+                # Update mode settings
                 config["mode_settings"]["testing"]["max_papers_per_agent"] = int(testing_max.get())
                 config["mode_settings"]["testing"]["per_query_limit"] = int(testing_limit.get())
                 config["mode_settings"]["daily"]["max_papers_per_agent"] = int(daily_max.get())
+                config["mode_settings"]["daily"]["per_query_limit"] = int(daily_limit.get())
+                config["mode_settings"]["backfill"]["per_query_limit"] = int(backfill_limit.get())
+                
+                # Update path settings
+                config["staging_dir"] = staging_path.get()
+                config["db_path"] = db_path.get()
+                
+                # Update cloud storage settings
+                if "cloud_storage" not in config:
+                    config["cloud_storage"] = {}
+                config["cloud_storage"]["path"] = cloud_path.get()
+                config["cloud_storage"]["enabled"] = cloud_enabled.get()
+                config["cloud_storage"]["check_duplicates"] = cloud_check_dupes.get()
+                config["cloud_storage"]["backup_path"] = backup_path.get()
+                
+                # Update retry settings
+                config["retry_settings"]["max_worker_retries"] = int(max_retries.get())
                 config["mode_settings"]["daily"]["per_query_limit"] = int(daily_limit.get())
 
                 backfill_max_val = backfill_max.get().strip().lower()

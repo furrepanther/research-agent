@@ -1,20 +1,23 @@
 import os
 import sys
+import multiprocessing
+import time
 from datetime import datetime, timedelta, timezone
 from src.utils import get_config, logger
 from src.storage import StorageManager
-from src.searchers.manager import SearchManager
-from src.export import ExportManager
-
 from src.filter import FilterManager
+from src.supervisor import Supervisor
+from src.searchers.arxiv_searcher import ArxivSearcher
+from src.searchers.lesswrong_searcher import LessWrongSearcher
+from src.searchers.lab_scraper import LabScraper
 
 import argparse
 
 def main():
     parser = argparse.ArgumentParser(description="Research Agent CLI")
-    parser.add_argument("--mode", type=str, choices=["BACKFILL", "DAILY"], help="Force search mode")
+    parser.add_argument("--mode", type=str, choices=["BACKFILL", "DAILY", "TESTING"], help="Force search mode")
     parser.add_argument("--prompt", type=str, help="Override prompt text")
-    parser.add_argument("--max-results", type=int, help="Override max results")
+    parser.add_argument("--max-results", type=int, help="Override max results per agent (deprecated, use mode_settings)")
     args = parser.parse_args()
 
     logger.info("Starting Research Agent...")
@@ -27,15 +30,14 @@ def main():
         return
 
     storage = StorageManager(config.get("db_path", "data/metadata.db"))
-    search_manager = SearchManager(config)
     export_mgr = ExportManager(config)
 
     # 2. Get User Prompt
     prompt_text = args.prompt
     if not prompt_text:
-        prompt_path = "prompt.txt"
+        prompt_path = "prompts/prompt.txt" if os.path.exists("prompts/prompt.txt") else "prompt.txt"
         if not os.path.exists(prompt_path):
-            logger.error(f"Prompt file not found: {prompt_path}")
+            logger.error(f"Prompt file not found: prompts/prompt.txt or prompt.txt")
             return
         with open(prompt_path, "r") as f:
             prompt_text = f.read().strip()
@@ -43,94 +45,125 @@ def main():
     if not prompt_text:
         logger.error("No prompt provided.")
         return
-        
-    filter_mgr = FilterManager(prompt_text)
 
-    # 3. Determine Mode (Backfill vs Daily)
+    # Validate and parse prompt
+    try:
+        filter_mgr = FilterManager(prompt_text)
+    except ValueError as e:
+        logger.error(f"Invalid prompt syntax:\n{e}")
+        logger.info("\nExample valid prompt:")
+        logger.info('  ("AI" OR "machine learning") AND ("safety" OR "alignment") ANDNOT ("automotive")')
+        logger.info("\nPrompt format rules:")
+        logger.info('  - Use quotes around search terms: "term"')
+        logger.info('  - Group terms with parentheses: ("term1" OR "term2")')
+        logger.info('  - Connect groups with AND')
+        logger.info('  - Exclude terms with ANDNOT at the end')
+        return
+
+    # 3. Determine Mode (Backfill vs Daily vs Testing)
     latest_date_str = storage.get_latest_date()
-    
+
     # Priority: Command line arg > Database State
     if args.mode:
         mode = args.mode.upper()
         if mode == "DAILY" and latest_date_str:
             start_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
+        elif mode == "TESTING":
+            start_date = datetime(2003, 1, 1)  # Testing uses arbitrary start date
         else:
-            start_date = datetime(2023, 1, 1) # Default for backfill or if no db date
+            start_date = datetime(2003, 1, 1)  # Default for backfill or if no db date
     elif latest_date_str:
         logger.info(f"Database contains papers. Latest published date: {latest_date_str}")
         start_date = datetime.strptime(latest_date_str, "%Y-%m-%d")
         mode = "DAILY"
     else:
         logger.info("Database is empty. Starting Backfill Mode.")
-        start_date = datetime(2023, 1, 1)
+        start_date = datetime(2003, 1, 1)
         mode = "BACKFILL"
-    
-    # Max Results logic
+
+    # Get mode-specific settings
+    mode_key = mode.lower()
+    mode_settings = config.get("mode_settings", {}).get(mode_key, {})
+
+    # Legacy support: if --max-results specified, use it; otherwise use mode_settings
     if args.max_results:
-        max_results = args.max_results
+        max_papers_per_agent = args.max_results
+        logger.warning("Using deprecated --max-results flag. Consider using mode_settings in config.yaml")
     else:
-        max_results = config.get("max_results_backfill", 200) if mode == "BACKFILL" else config.get("max_results_daily", 10)
-    
-    logger.info(f"Mode: {mode} | Query: '{prompt_text[:50]}...' | Start Date: {start_date.strftime('%Y-%m-%d')} | Max Results: {max_results}")
+        max_papers_per_agent = mode_settings.get("max_papers_per_agent")
+        if max_papers_per_agent is None:  # None means unlimited for backfill
+            max_papers_per_agent = float('inf')
 
-    # 4. Search & Download
-    # For API Search, we pass the full prompt. The API might do a loose match.
-    results = search_manager.search_all(prompt_text, start_date=start_date, max_results=max_results)
-    
-    import random
-    random.shuffle(results)
-    
-    new_count = 0
-    filtered_count = 0
-    
-    for paper in results:
-        # Client-Side Filter
-        if not filter_mgr.is_relevant(paper):
-            filtered_count += 1
-            continue
+    per_query_limit = mode_settings.get("per_query_limit", 10)  # Default to 10 if not specified
+    respect_date_range = mode_settings.get("respect_date_range", True)
 
-        # Check if exists (Quick ID check to avoid download if possible)
-        # Note: We still probably want to call add_paper to handle merging sources even if it exists.
-        # But to save download bandwidth, we can check basic existence.
-        # If ID exists, we just call add_paper to merge sources.
-        # If ID doesn't exist, we check Title/Content in add_paper. 
-        # But we need PDF to add new paper.
-        # Strategy: 
-        # 1. If ID exists -> Call add_paper (merges), Skip Download.
-        # 2. If ID NOT exists -> Download -> Call add_paper (checks duplicate content -> merges OR adds).
-        
-        if storage.paper_exists(paper['id']):
-             # Just try to merge source
-             storage.add_paper(paper)
-             continue
-        
-        # Download
-        pdf_path = search_manager.download_paper(paper)
-        if pdf_path:
-            paper['pdf_path'] = pdf_path
-            paper['downloaded_date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Store (handles content deduplication)
-            if storage.add_paper(paper):
-                new_count += 1
-        else:
-            logger.warning(f"Skipping storage for {paper['id']} due to download failure.")
+    logger.info(f"Mode: {mode} | Query: '{prompt_text[:50]}...' | Start Date: {start_date.strftime('%Y-%m-%d')}")
+    logger.info(f"Limits: {max_papers_per_agent if max_papers_per_agent != float('inf') else 'UNLIMITED'} total, {per_query_limit} per query | Date Range: {'Respected' if respect_date_range else 'Ignored'}")
 
-    logger.info(f"Search Results: {len(results)} | Filtered Out: {filtered_count} | Added New: {new_count}")
+    # 4. Search & Download - USE SUPERVISOR FOR PARALLEL EXECUTION
+    task_queue = multiprocessing.Queue()
+    stop_event = multiprocessing.Event()
 
-    if mode == "BACKFILL" and new_count == 0:
-        logger.error("Zero documents returned during backfill run. This is treated as a failure.")
-        sys.exit(1)
+    # Pass mode settings to supervisor
+    search_params = {
+        'max_papers_per_agent': max_papers_per_agent,
+        'per_query_limit': per_query_limit,
+        'respect_date_range': respect_date_range,
+        'start_date': start_date
+    }
 
-    # 5. Export to Excel
-    logger.info("Starting Excel Export...")
-    unsynced = storage.get_unsynced_papers()
-    if unsynced:
-        exported_ids = export_mgr.export_papers(unsynced)
-        storage.mark_synced(exported_ids)
-        logger.info(f"Exported and marked {len(exported_ids)} papers.")
-    else:
-        logger.info("No unsynced papers found.")
+    supervisor = Supervisor(task_queue, stop_event, prompt_text, search_params, mode)
+
+    # Start all workers
+    workers = [
+        (ArxivSearcher, "ArXiv"),
+        (LessWrongSearcher, "LessWrong"),
+        (LabScraper, "AI Labs")
+    ]
+
+    logger.info("Starting parallel search workers...")
+    for searcher_class, display_name in workers:
+        supervisor.start_worker(searcher_class, display_name)
+
+    # Process messages until all workers complete
+    while supervisor.is_any_alive():
+        try:
+            msg = task_queue.get(timeout=1)
+            msg_type = msg.get("type")
+
+            if msg_type == "UPDATE_ROW":
+                status = msg.get("status", "")
+                details = msg.get("details", "")
+                logger.info(f"[{msg['source']}] {status}: {details}")
+
+                # Update heartbeat
+                src = msg.get("source")
+                if src in supervisor.workers:
+                    supervisor.workers[src]['last_heartbeat'] = time.time()
+
+            elif msg_type == "LOG":
+                logger.info(msg.get("text"))
+
+            elif msg_type == "ERROR":
+                supervisor.handle_error(msg)
+
+        except:
+            # Timeout, check for worker timeouts
+            supervisor.check_timeouts()
+            pass
+
+    logger.info("All workers completed.")
+
+    # Check for backfill mode failure
+    # Note: With the new architecture, workers handle their own storage,
+    # so we check if any papers were added across all sources
+    if mode == "BACKFILL":
+        # Count recent papers added (within last minute)
+        recent_papers = storage.get_unsynced_papers()
+        if len(recent_papers) == 0:
+            logger.error("Zero documents returned during backfill run. This is treated as a failure.")
+            sys.exit(1)
+
 
     logger.info("Research Agent Finished.")
 

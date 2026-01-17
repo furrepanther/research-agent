@@ -15,23 +15,24 @@ class CrashSearcher(BaseSearcher):
 
     def search(self, query, start_date=None, max_results=10, stop_event=None):
         ts = int(time.time())
+        # Return papers that will pass filtering (contain "test")
         return [
             {
-                'id': f'test1_{ts}', 
-                'title': f'Test Paper 1 {ts}', 
+                'id': f'test1_{ts}',
+                'title': f'Test Paper 1 {ts}',
                 'source_url': f'http://example.com/1/{ts}',
                 'published_date': '2024-01-01',
                 'authors': 'Test Author',
-                'abstract': 'Test Abstract',
+                'abstract': 'Test Abstract about test prompt',  # Will pass filter
                 'source': 'crashtest'
             },
             {
-                'id': f'test2_{ts}', 
-                'title': f'Test Paper 2 {ts}', 
+                'id': f'test2_{ts}',
+                'title': f'Test Paper 2 {ts}',
                 'source_url': f'http://example.com/2/{ts}',
                 'published_date': '2024-01-01',
                 'authors': 'Test Author',
-                'abstract': 'Test Abstract',
+                'abstract': 'Test Abstract about test prompt',  # Will pass filter
                 'source': 'crashtest'
             }
         ]
@@ -49,9 +50,9 @@ def test_self_healing():
     print("Starting Self-Healing Test...")
     q = multiprocessing.Queue()
     stop_event = multiprocessing.Event()
-    
-    # Initialize Supervisor
-    supervisor = Supervisor(q, stop_event, "test prompt", 10)
+
+    # Initialize Supervisor with BACKFILL mode to trigger error on zero downloads
+    supervisor = Supervisor(q, stop_event, "test prompt", 10, mode="BACKFILL")
     
     # Manually inject our crash searcher class
     # Normally Supervisor gets this from GUI, but we'll call start_worker directly
@@ -92,7 +93,7 @@ def test_self_healing():
             pass
 
     # Final Verification of disk/DB
-    db_path = "f:/Antigravity_Results/Research_Papers/data/metadata.db"
+    db_path = config.get("db_path", "data/metadata.db")
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT count(*) FROM papers WHERE source = 'crashtest'")

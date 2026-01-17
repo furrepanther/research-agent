@@ -107,7 +107,6 @@ class SummaryWindow:
         stats = {}
         source_names = {
             'arxiv': 'ArXiv',
-            # 'semantic': 'Semantic Scholar',  # DISABLED
             'lesswrong': 'LessWrong',
             'labs_anthropic': 'Anthropic',
             'labs_openai': 'OpenAI',
@@ -133,7 +132,6 @@ class SummaryWindow:
         groups = {}
         source_names = {
             'arxiv': 'ArXiv',
-            # 'semantic': 'Semantic Scholar',  # DISABLED
             'lesswrong': 'LessWrong',
             'labs_anthropic': 'Anthropic',
             'labs_openai': 'OpenAI',

@@ -13,7 +13,7 @@ class ResearchAgent:
     def search_arxiv(self, query, start_date=None, max_results=10):
         """
         Search Arxiv for papers.
-        query: Search string from prompt.txt
+        query: Search string from prompts/prompt.txt
         start_date: datetime object (UTC). If provided, filters results newer than this date.
         max_results: int
         """

@@ -56,7 +56,13 @@ if __name__ == "__main__":
     searcher_class, display_name = agents[agent_name]
     
     # Load prompt
-    with open("prompt.txt", "r") as f:
+    prompt_path = "prompts/prompt.txt"
+    if not os.path.exists(prompt_path):
+        prompt_path = "../prompts/prompt.txt"
+    if not os.path.exists(prompt_path):
+        prompt_path = "prompt.txt"
+
+    with open(prompt_path, "r") as f:
         prompt = f.read().strip()
     
     print(f"Testing {display_name} agent...")

@@ -10,7 +10,13 @@ def run_test():
     config = get_config()
     manager = SearchManager(config)
     
-    with open("prompt.txt", "r") as f:
+    prompt_path = "prompts/prompt.txt"
+    if not os.path.exists(prompt_path):
+        prompt_path = "../prompts/prompt.txt"
+    if not os.path.exists(prompt_path):
+        prompt_path = "prompt.txt"
+
+    with open(prompt_path, "r") as f:
         prompt_text = f.read().strip()
     filter_mgr = FilterManager(prompt_text)
 

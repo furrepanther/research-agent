@@ -1,0 +1,10 @@
+# Persistent Agent Rules
+
+The following rules must be followed by any AI agent working on this project:
+
+1. **Browser Visibility**: All browser-based interactions (scraping, research, testing) should be performed in **headless mode** (invisible) or minimized whenever possible.
+2. **Browser Cleanup**: Every browser instance or window opened by the agent or the application must be explicitly **closed** as soon as its task is complete. No stray browser processes should remain active.
+3. **Download Strategy**: Prioritize direct PDF links or API-based metadata retrieval over browser-heavy scraping to minimize resource usage.
+4. **Environment Safety**: Always ensure interactions take place within the established virtual environment (`venv`) using the provided launcher scripts (`run_gui.bat`).
+
+These rules ensure the research agent remains non-intrusive and resource-efficient.

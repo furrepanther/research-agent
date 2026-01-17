@@ -2,12 +2,59 @@
 
 # General Settings
 storage_path: "F:/Antigravity_Results/Research_Papers/data"
-papers_dir: "F:/Antigravity_Results/Research_Papers/data/papers"
-db_path: "F:/Antigravity_Results/Research_Papers/data/metadata.db"
+# Staging directory (temporary storage before transfer to cloud)
+staging_dir: "F:/RESTMP"
 
-# Search Settings
+# Cloud Storage Settings (Production Library)
+cloud_storage:
+  enabled: true
+  path: "R:/MyDrive/03 Research Papers"
+  check_duplicates: true  # Check cloud storage during duplicate detection
+  backup_enabled: true
+
+db_path: "F:/TMPRES/metadata.db"
+
+# Mode-Specific Search Settings
+mode_settings:
+  # Testing mode - small limits for quick verification
+  testing:
+    max_papers_per_agent: 10       # Total papers per agent (hard limit)
+    per_query_limit: 5             # Papers fetched per API call/batch
+    respect_date_range: false      # Stop when limit hit, ignore dates
+  
+  # Test mode - count only, no downloads or database updates
+  test:
+    max_papers_per_agent: 0        # No downloads
+    per_query_limit: 100           # Fetch counts only
+    respect_date_range: true       # Respect date ranges for accurate counts
+
+  # Daily mode - moderate limits for incremental updates
+  daily:
+    max_papers_per_agent: 50       # Total papers per agent
+    per_query_limit: 20            # Papers per API call
+    respect_date_range: true       # Stop at start_date
+
+  # Backfill mode - unlimited total, small batches for stability
+  backfill:
+    max_papers_per_agent: null     # No limit (null = unlimited)
+    per_query_limit: 10            # Smaller batches to avoid connection errors
+    respect_date_range: true       # Continue until date range satisfied
+
+# Legacy settings (deprecated, kept for backward compatibility)
 max_results_daily: 200
 max_results_backfill: 200
+
+# Retry and Timeout Settings
+retry_settings:
+  # Supervisor/Worker settings
+  max_worker_retries: 2          # Max retries for failed workers
+  worker_retry_delay: 5          # Seconds to wait before retrying worker
+  worker_timeout: 600            # Worker timeout in seconds (10 minutes)
+
+  # API request settings
+  api_max_retries: 3             # Max retries for API calls
+  api_base_delay: 2              # Base delay for exponential backoff
+  request_pacing_delay: 1.0      # Delay between requests (rate limiting)
 
 # Export Settings
 export_dir: "F:/Antigravity_Results/Research_Papers"

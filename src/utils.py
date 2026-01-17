@@ -56,7 +56,47 @@ def to_title_case(text):
             title_words.append(word.lower())
     return " ".join(title_words)
 
-def sanitize_filename(title, extension=".pdf"):
+def normalize_url(url):
+    """
+    Normalize URL for comparison and deduplication.
+    - Forces https (most academic sites use https)
+    - Removes trailing slash
+    - Removes common tracking params
+    - Lowercases domain
+    """
+    if not url:
+        return url
+
+    from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
+    # Parse URL
+    parsed = urlparse(url)
+
+    # Normalize scheme to https (most academic sites use https now)
+    scheme = 'https'
+
+    # Lowercase domain
+    netloc = parsed.netloc.lower()
+
+    # Remove trailing slash from path
+    path = parsed.path.rstrip('/')
+
+    # Remove tracking parameters
+    tracking_params = {'utm_source', 'utm_medium', 'utm_campaign', 'ref', 'source', 'fbclid', 'gclid'}
+    if parsed.query:
+        query_dict = parse_qs(parsed.query)
+        # Remove tracking params
+        query_dict = {k: v for k, v in query_dict.items() if k not in tracking_params}
+        # Rebuild query string
+        query = urlencode(query_dict, doseq=True) if query_dict else ''
+    else:
+        query = ''
+
+    # Reconstruct URL
+    normalized = urlunparse((scheme, netloc, path, '', query, ''))
+    return normalized
+
+def sanitize_filename(title, extension=""):
     """Creates a Windows-safe filename using Title Case and removing 'garbage'."""
     # 1. Title Case
     clean_title = to_title_case(title)
@@ -69,3 +109,19 @@ def sanitize_filename(title, extension=".pdf"):
     if not safe_title:
         safe_title = "Untitled Paper"
     return f"{safe_title}{extension}"
+
+def clear_directory(directory_path):
+    """Safely delete ALL files and folders within a directory without deleting the directory itself."""
+    import shutil
+    if not os.path.exists(directory_path):
+        return
+    
+    for filename in os.listdir(directory_path):
+        file_path = os.path.join(directory_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            logger.error(f"Failed to delete {file_path}. Reason: {e}")
