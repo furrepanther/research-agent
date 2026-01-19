@@ -26,10 +26,27 @@ class Supervisor:
         self.max_retries = retry_settings.get('max_worker_retries', 2)
         self.worker_timeout = retry_settings.get('worker_timeout', 600)
         self.worker_retry_delay = retry_settings.get('worker_retry_delay', 5)
+        
+        # Concurrency Control
+        self.max_concurrent_workers = 3
+        self.pending_workers = [] # List of (searcher_class, display_name) tuples
 
     def start_worker(self, searcher_class, display_name):
         if display_name in self.workers and self.workers[display_name]['process'].is_alive():
             logger.warning(f"Worker {display_name} already running.")
+            return
+
+        # Check concurrency limit
+        active_workers = [w for w in self.workers.values() if w['process'].is_alive()]
+        if len(active_workers) >= self.max_concurrent_workers:
+            logger.info(f"Concurrency limit reached ({len(active_workers)}/{self.max_concurrent_workers}). Queuing worker: {display_name}")
+            self.pending_workers.append((searcher_class, display_name))
+            self.task_queue.put({
+                "type": "UPDATE_ROW",
+                "source": display_name,
+                "status": "Queued",
+                "details": f"Waiting for slot (Priority: {len(self.pending_workers)})"
+            })
             return
 
         p = multiprocessing.Process(
@@ -164,8 +181,22 @@ class Supervisor:
     def is_any_alive(self):
         return any(w['process'].is_alive() for w in self.workers.values())
 
+    def _maintain_concurrency(self):
+        """Start pending workers if slots are available."""
+        active_workers = [w for w in self.workers.values() if w['process'].is_alive()]
+        while len(active_workers) < self.max_concurrent_workers and self.pending_workers:
+            # Start next worker
+            searcher_class, display_name = self.pending_workers.pop(0)
+            logger.info(f"Starting queued worker: {display_name}")
+            self.start_worker(searcher_class, display_name)
+            # Re-fetch active count to be safe (though start_worker updates it locally effectively)
+            active_workers = [w for w in self.workers.values() if w['process'].is_alive()]
+
     def check_timeouts(self):
         """Check for workers that have been running too long without updates."""
+        # First, try to start any queued workers
+        self._maintain_concurrency()
+        
         current_time = time.time()
         for display_name, worker_info in list(self.workers.items()):
             if not worker_info['process'].is_alive():

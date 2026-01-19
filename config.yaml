@@ -37,3 +37,8 @@ export_dir: F:/Antigravity_Results/Research_Papers
 export_filename: research_log.xlsx
 scheduled_time: 06:00
 papers_dir: data/papers
+email:
+  smtp_server: smtp.gmail.com
+  smtp_port: 587
+  smtp_user: noone@nowhere.com
+  kindle_email: your_kindle@kindle.com

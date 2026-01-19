@@ -443,6 +443,19 @@ export_filename: "research_log.xlsx"
 python main.py --mode TESTING
 ```
 
+### Database Maintenance (Reconstruction)
+
+If the local database (`metadata.db`) becomes corrupted or out of sync with the Cloud Folder, use the **Reconstruction Tools**:
+
+1. **Run Reconstruction**:
+   - Double-click **`Run Reconstruction.lnk`** (or `run_reconstruct.bat`).
+   - Choose **Update** (default) or **Wipe** (clean start).
+   - Runs invisibly in the background.
+
+2. **Monitor Progress**:
+   - Double-click **`View Logs.lnk`** (or `view_logs.bat`).
+   - Tails the log file from the Cloud Storage in real-time.
+
 ---
 
 ### DAILY Mode

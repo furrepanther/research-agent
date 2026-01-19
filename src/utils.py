@@ -30,6 +30,37 @@ def get_config():
     ensure_directories(config)
     return config
 
+def save_config(config, config_path="config.yaml"):
+    """Saves the configuration dict to the file."""
+    with open(config_path, "w") as f:
+        yaml.dump(config, f, sort_keys=False, default_flow_style=False)
+
+def extract_simple_keywords(query):
+    """
+    Extracts meaningful keywords from a complex boolean query string.
+    Removes operators (AND, OR, NOT) and punctuation.
+    Returns a list of unique lowercase terms.
+    """
+    if not query:
+        return []
+    
+    # Remove parens and quotes (both single and double)
+    cleaned = query.replace('(', ' ').replace(')', ' ').replace('"', ' ').replace("'", ' ')
+    
+    # Split by whitespace
+    tokens = cleaned.split()
+    
+    # Filter out operators and short/common words
+    stop_words = {'and', 'or', 'not', 'andnot', 'to', 'in', 'of', 'the', 'a', 'an'}
+    keywords = set()
+    
+    for token in tokens:
+        t = token.lower().strip()
+        if t and t not in stop_words and len(t) > 1:
+            keywords.add(t)
+            
+    return list(keywords)
+
 def to_title_case(text):
     """Converts a string to Title Case based on standard rules, preserving acronyms."""
     if not text:
@@ -40,6 +71,16 @@ def to_title_case(text):
     text = text.replace("â•ﬂ", " - ").replace("â•Ž26", "'26").replace("â•Ž", "'")
     text = re.sub(r' \| .*$', '', text) # Remove source suffixes like "| LessWrong"
     text = text.replace("Microsoft Word - ", "")
+    
+    # Remove specific date patterns often found in titles
+    # e.g., (2023), [2022], 2023-12-01
+    text = re.sub(r'\(\d{4}\)', '', text)
+    text = re.sub(r'\[\d{4}\]', '', text)
+    text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
+    
+    # Remove junk characters (pipes, asterisks, tildes)
+    # Keep colons, hyphens, question marks, exclamation marks, quotes, parens
+    text = re.sub(r'[\|\*\~]', ' ', text)
     
     # Replace underscores with spaces (always)
     text = text.replace("_", " ")
@@ -258,4 +299,29 @@ def generate_stable_hash(text):
     
     # Take the first 8 bytes (64 bits) and convert to a signed integer
     # SQLite INTEGER can store up to 8-byte signed integers.
-    return int.from_bytes(hash_bytes[:8], byteorder='big', signed=True)
+# ... (at end of file)
+def is_english(text, threshold=0.5):
+    """
+    Detects if the text is in English using langdetect.
+    Returns True if 'en' is the most probable language or above threshold.
+    If detection fails, defaults to True for academic context.
+    """
+    if not text or len(text) < 10:
+        return True
+    
+    try:
+        from langdetect import detect_langs
+        langs = detect_langs(text)
+        if not langs:
+            return True
+        # Check if 'en' is the top language or has decent probability
+        main_lang = langs[0]
+        if main_lang.lang == 'en':
+            return True
+        # If 'en' is in the list with high enough probability
+        for l in langs:
+            if l.lang == 'en' and l.prob > threshold:
+                return True
+        return False
+    except:
+        return True

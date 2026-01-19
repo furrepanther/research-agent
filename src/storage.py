@@ -1,11 +1,12 @@
 import sqlite3
 import os
+from datetime import datetime
 from src.utils import logger
 
 class StorageManager:
     # Database schema version - increment when adding new migrations
     # Database schema version - increment when adding new migrations
-    CURRENT_VERSION = 5
+    CURRENT_VERSION = 6
 
     def __init__(self, db_path):
         self.db_path = db_path
@@ -137,6 +138,7 @@ class StorageManager:
             2: self._migration_v2_create_version_table,
             4: self._migration_v4_high_efficiency,
             5: self._migration_v5_remove_paper_id,
+            6: self._migration_v6_add_language_column,
         }
 
         # Apply migrations in order
@@ -170,7 +172,8 @@ class StorageManager:
                 source_url TEXT,
                 downloaded_date TEXT,
                 synced_to_cloud BOOLEAN DEFAULT 0,
-                source TEXT
+                source TEXT,
+                language TEXT DEFAULT 'en'
             )
         """)
         
@@ -248,6 +251,17 @@ class StorageManager:
         
         logger.info("  - Migration v5 complete: 'paper_id' removed.")
 
+    def _migration_v6_add_language_column(self, cursor):
+        """Migration v6: Add 'language' column to papers table."""
+        logger.info("Applying migration v6: Adding 'language' column")
+        cursor.execute("PRAGMA table_info(papers)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if 'language' not in columns:
+            cursor.execute("ALTER TABLE papers ADD COLUMN language TEXT DEFAULT 'en'")
+            logger.info("  - Added 'language' column")
+        else:
+            logger.info("  - 'language' column already exists")
+
     def paper_exists_by_hash(self, p_hash):
         """Check if a paper exists using its 64-bit numeric hash."""
         if not p_hash or p_hash == 0:
@@ -289,7 +303,7 @@ class StorageManager:
         Adds a paper to the database with high-efficiency URL-centric hash checks.
         paper_data: dict containing keys matching table columns
         """
-        from src.utils import generate_stable_hash, normalize_url
+        from src.utils import generate_stable_hash, normalize_url, to_title_case
         
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -299,6 +313,11 @@ class StorageManager:
             # Shift to URL-Centric Hashing for cross-source deduplication
             source_url = paper_data.get('source_url', '')
             primary_url = source_url.split(',')[0].strip() if ',' in source_url else source_url.strip()
+            
+            # CLEAN TITLE
+            # Apply strict title casing and cleaning before insertion/hashing
+            if paper_data.get('title'):
+                paper_data['title'] = to_title_case(paper_data['title'])
             
             # 1. Generate Hashes
             # Use primary normalized URL for the stable paper_hash
@@ -332,8 +351,8 @@ class StorageManager:
                 INSERT OR IGNORE INTO papers (
                     paper_hash, title_hash, title, published_date, 
                     authors, abstract, pdf_path, source_url, downloaded_date, 
-                    source, synced_to_cloud
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source, synced_to_cloud, language
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 p_hash,
                 t_hash,
@@ -343,9 +362,10 @@ class StorageManager:
                 paper_data['abstract'],
                 paper_data['pdf_path'],
                 paper_data['source_url'],
-                paper_data['downloaded_date'],
-                source,
-                0 # Not synced yet
+                paper_data.get('downloaded_date', datetime.now().strftime("%Y-%m-%d")),
+                paper_data.get('source', 'unknown'),
+                0, # Not synced yet
+                paper_data.get('language', 'en')
             ))
             conn.commit()
             if cursor.rowcount > 0:
@@ -422,6 +442,14 @@ class StorageManager:
         
         placeholders = ','.join(['?'] * len(internal_ids))
         cursor.execute(f"UPDATE papers SET synced_to_cloud = 1 WHERE id IN ({placeholders})", internal_ids)
+        conn.commit()
+        conn.close()
+
+    def update_pdf_path(self, paper_hash, new_path):
+        """Updates the PDF path for a specific paper hash."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE papers SET pdf_path = ?, synced_to_cloud = 1 WHERE paper_hash = ?", (new_path, paper_hash))
         conn.commit()
         conn.close()
 

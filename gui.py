@@ -32,6 +32,9 @@ import threading
 from src.searchers.arxiv_searcher import ArxivSearcher
 from src.searchers.lesswrong_searcher import LessWrongSearcher
 from src.searchers.lab_scraper import LabScraper
+from src.searchers.openreview_searcher import OpenReviewSearcher
+from src.searchers.acl_searcher import AclSearcher
+from src.searchers.aaai_searcher import AaaiSearcher
 from src.supervisor import Supervisor
 from src.storage import StorageManager
 from src.cloud_transfer import CloudTransferManager
@@ -80,7 +83,8 @@ class AgentGUI:
         self.tree.pack(pady=20, padx=20, fill="both", expand=True)
         
         # Init Rows
-        self.sources = ["ArXiv", "LessWrong", "AI Labs"]  # Removed Semantic Scholar
+        # Init Rows
+        self.sources = ["ArXiv", "LessWrong", "AI Labs", "OpenReview", "ACL Anthology", "AAAI", "Non-English"]
         self.row_ids = {}
         for src in self.sources:
             item_id = self.tree.insert("", "end", values=(src, "Waiting", "0", "-"))
@@ -172,7 +176,45 @@ class AgentGUI:
         
         # Determine Mode from dropdown
         config = get_config()
-        storage = StorageManager(config.get("db_path", "data/metadata.db"))
+        
+        # --- DATABASE SAFETY LOGIC ---
+        import tempfile
+        import shutil
+        from datetime import datetime
+        
+        real_db_path = config.get("db_path", "data/metadata.db")
+        self.prod_db_path = os.path.abspath(real_db_path)
+        
+        # Generate temp paths
+        temp_dir = tempfile.gettempdir()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(temp_dir, f"research_agent_backup_{timestamp}.db")
+        working_path = os.path.join(temp_dir, f"research_agent_working_{timestamp}.db")
+        
+        # 1. Backup Production DB (Safety Snapshot)
+        if os.path.exists(self.prod_db_path):
+            try:
+                shutil.copy2(self.prod_db_path, backup_path)
+                self.log_message(f"Safety Backup created at: {backup_path}")
+            except Exception as e:
+                self.log_message(f"Warning: Failed to create safety backup: {e}")
+
+        # 2. Create Working Copy (The one we will modify)
+        if os.path.exists(self.prod_db_path):
+            try:
+                shutil.copy2(self.prod_db_path, working_path)
+                self.log_message(f"Working DB created at: {working_path}")
+            except Exception as e:
+                self.log_message(f"Error creating working DB: {e}")
+                working_path = self.prod_db_path # Fallback (risky but necessary)
+        else:
+            # If no DB exists, working path is just where we start
+            pass
+            
+        self.working_db_path = working_path
+        
+        # Initialize Storage with WORKING COPY
+        storage = StorageManager(self.working_db_path)
         
         selected_mode = self.mode_var.get()
         
@@ -235,11 +277,44 @@ class AgentGUI:
         workers = [
             (ArxivSearcher, "ArXiv"),
             (LessWrongSearcher, "LessWrong"),
-            (LabScraper, "AI Labs")
+            (LabScraper, "AI Labs"),
+            (OpenReviewSearcher, "OpenReview"),
+            (AclSearcher, "ACL Anthology"),
+            (AaaiSearcher, "AAAI")
         ]
 
         for searcher_class, display_name in workers:
             self.supervisor.start_worker(searcher_class, display_name)
+            
+        # Start background monitor for Non-English count
+        self.monitor_thread = threading.Thread(target=self._monitor_db_stats, daemon=True)
+        self.monitor_thread.start()
+
+    def _monitor_db_stats(self):
+        """Background thread to monitor DB stats without blocking UI"""
+        while self.is_running and not self.stop_event.is_set():
+            try:
+                config = get_config()
+                # Use a new connection for this thread
+                st = StorageManager(config.get("db_path", "data/metadata.db"))
+                non_en_count = st.get_non_english_count()
+                
+                # Send update to main thread via queue
+                self.task_queue.put({
+                    "type": "UPDATE_ROW",
+                    "source": "Non-English",
+                    "status": "Tracking",
+                    "count": str(non_en_count),
+                    "details": "Candidates for translation"
+                })
+            except Exception as e:
+                pass # Silent fail to avoid spamming logs
+            
+            # Sleep for 5 seconds
+            for _ in range(50):
+                if not self.is_running or self.stop_event.is_set():
+                    break
+                time.sleep(0.1)
 
     def stop_agent(self):
         if self.stop_event.is_set():
@@ -339,7 +414,7 @@ class AgentGUI:
                 elif msg_type == "ERROR":
                     if self.supervisor:
                         self.supervisor.handle_error(msg)
-
+                
                 elif msg_type == "DONE":
                     self.is_running = False
                     self.root.config(cursor="")  # Restore normal cursor
@@ -358,7 +433,7 @@ class AgentGUI:
                         self._show_summary_window()
                         
                         # BACKFILL MODE: Ask to transfer to cloud storage
-                        if hasattr(self, 'mode') and self.mode == "BACKFILL":
+                        if hasattr(self, 'mode') and self.mode != "Test":
                             self._show_transfer_dialog()
 
                     self.btn_start.config(state=tk.NORMAL)
@@ -383,8 +458,7 @@ class AgentGUI:
                     
                     # TRIGGER FINAL WORKFLOW
                     self.root.after(500, self._show_summary_window)
-                    if self.mode == "BACKFILL":
-                        self.root.after(1000, self._show_transfer_dialog)
+
 
             self.root.after(100, self.process_queue)
 
@@ -431,7 +505,12 @@ class AgentGUI:
             if result:
                 self.log_message("Starting cloud transfer...")
                 config = get_config()
-                transfer_mgr = CloudTransferManager(config)
+                
+                # Pass DB paths if available
+                working_db = getattr(self, 'working_db_path', None)
+                prod_db = getattr(self, 'prod_db_path', None)
+                
+                transfer_mgr = CloudTransferManager(config, working_db_path=working_db, prod_db_path=prod_db)
                 
                 success = transfer_mgr.transfer_folders()
                 

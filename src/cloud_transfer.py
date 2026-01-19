@@ -23,11 +23,13 @@ class Conflict:
         self.cloud_modified = datetime.fromtimestamp(os.path.getmtime(cloud_path)) if os.path.exists(cloud_path) else None
 
 class CloudTransferManager:
-    def __init__(self, config):
+    def __init__(self, config, working_db_path=None, prod_db_path=None):
         self.staging_dir = config.get("staging_dir", "F:/RESTMP")
         cloud_config = config.get("cloud_storage", {})
         self.cloud_dir = cloud_config.get("path", "R:/MyDrive/03 Research Papers")
         self.enabled = cloud_config.get("enabled", True)
+        self.working_db_path = working_db_path
+        self.prod_db_path = prod_db_path
         
     def scan_conflicts(self):
         """Scan for files that exist in both staging and cloud storage"""
@@ -149,6 +151,10 @@ Overwrite the cloud file with the staging file?"""
                     shutil.move(staging_path, cloud_path)
                     transferred_count += 1
                     logger.info(f"Transferred: {filename} -> {category}")
+                    
+                    # --- DATABASE SYNC ---
+                    self._sync_to_prod_db(filename, category, cloud_path)
+                    
                 except Exception as e:
                     logger.error(f"Error transferring {filename}: {e}")
         
@@ -175,3 +181,43 @@ Overwrite the cloud file with the staging file?"""
                 return True
                 
         return False
+
+    def _sync_to_prod_db(self, filename, category, cloud_path):
+        """Syncs the metadata for a transferred file from Working DB to Production DB."""
+        if not self.working_db_path or not self.prod_db_path:
+            return
+
+        try:
+            from src.storage import StorageManager
+            import sqlite3
+            
+            # Read from Working DB (direct query for speed/safety)
+            conn = sqlite3.connect(self.working_db_path)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT * FROM papers WHERE pdf_path LIKE ?", (f"%{filename}",))
+            row = c.fetchone()
+            conn.close()
+            
+            if row:
+                paper_data = dict(row)
+                
+                # Update path in memory before insert/update
+                paper_data['pdf_path'] = cloud_path
+                paper_data['synced_to_cloud'] = 1
+                
+                # Write to Production DB
+                prod_store = StorageManager(self.prod_db_path)
+                
+                # 1. Add (or Merge)
+                new_id = prod_store.add_paper(paper_data)
+                
+                # 2. Force Path Update (Ensure hash exists)
+                if 'paper_hash' in paper_data and paper_data['paper_hash']:
+                    prod_store.update_pdf_path(paper_data['paper_hash'], cloud_path)
+                    logger.info(f"Synced metadata to Production DB: {filename}")
+            else:
+                pass 
+
+        except Exception as e:
+            logger.error(f"Failed to sync database for {filename}: {e}")

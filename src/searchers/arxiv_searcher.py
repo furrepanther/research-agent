@@ -85,6 +85,14 @@ class ArxivSearcher(BaseSearcher):
                         reached_date_limit = True
                         break 
 
+                # Language tracking: Detect if paper is English
+                lang_code = 'en'
+                try:
+                    from langdetect import detect
+                    lang_code = detect(result.title + " " + result.summary)
+                except:
+                    lang_code = 'en'
+
                 paper_meta = {
                     'id': result.entry_id.split('/')[-1],
                     'title': result.title,
@@ -94,7 +102,8 @@ class ArxivSearcher(BaseSearcher):
                     'source_url': result.entry_id,
                     'pdf_url': result.pdf_url,
                     'source': self.source_name,
-                    'is_preprint': True
+                    'is_preprint': True,
+                    'language': lang_code
                 }
                 all_results.append(paper_meta)
                 
