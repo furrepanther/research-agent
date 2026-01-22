@@ -41,6 +41,7 @@ email:
   smtp_server: smtp.gmail.com
   smtp_port: 587
   smtp_user: noone@nowhere.com
+  smtp_password: ""
   kindle_email: your_kindle@kindle.com
 date_overlap_days: 15
 ingest_path: G:/Downloads/Add to Research

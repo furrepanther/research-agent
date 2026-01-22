@@ -533,11 +533,17 @@ class ResearchViewer:
         ent_pass = ttk.Entry(form_frame, width=30, show="*")
         ent_pass.grid(row=3, column=1, sticky="w", pady=5)
         
-        # Check if password exists in keyring
+        # Load password from config first (fallback)
+        conf_pass = email_conf.get("smtp_password", "")
+        if conf_pass:
+            ent_pass.insert(0, conf_pass)
+            
+        # Check if password exists in keyring (overrides config display usually, or implies security)
         current_user = email_conf.get("smtp_user", "")
         if keyring and current_user:
              try:
                  if keyring.get_password("research_agent", current_user):
+                     ent_pass.delete(0, tk.END)
                      ent_pass.insert(0, "********")
              except: pass
 
@@ -563,18 +569,34 @@ class ResearchViewer:
             # Handle Password
             pw_input = ent_pass.get()
             if pw_input and pw_input != "********":
+                saved_to_keyring = False
                 if keyring:
                     try:
                         keyring.set_password("research_agent", ent_user.get(), pw_input)
+                        saved_to_keyring = True
                         messagebox.showinfo("Security", "Password securely stored in OS Keychain.")
                     except Exception as e:
-                        messagebox.showerror("Keyring Error", str(e))
+                        print(f"Keyring failed: {e}") 
+                        # Fall through to config save
+                
+                if saved_to_keyring:
+                    # Remove from config if secure storage worked
+                    if "smtp_password" in new_conf["email"]:
+                        del new_conf["email"]["smtp_password"]
                 else:
-                    messagebox.showwarning("Insecure", "Keyring module not found. Password NOT saved.")
+                    # Fallback to plain text config
+                    new_conf["email"]["smtp_password"] = pw_input
+                    if keyring:
+                        msg = "Keyring save failed. Password saved to config.yaml in PLAIN TEXT."
+                    else:
+                        msg = "Keyring module not found. Password saved to config.yaml in PLAIN TEXT."
+                    messagebox.showwarning("Security Warning", msg)
             
-            # Save to File (without password)
-            if "smtp_password" in new_conf["email"]:
-                del new_conf["email"]["smtp_password"]
+            # If password was cleared or not changed, we don't necessarily delete it 
+            # unless we want to allow clearing? 
+            # For now, simplistic approach.
+            
+            # Save to File
                 
             try:
                 save_config(new_conf)
