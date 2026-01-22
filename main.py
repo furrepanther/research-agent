@@ -148,9 +148,11 @@ def main():
                 supervisor.handle_error(msg)
 
         except:
-            # Timeout, check for worker timeouts
-            supervisor.check_timeouts()
+            # Timeout (queue empty)
             pass
+        
+        # Always check timeouts/concurrency periodically
+        supervisor.check_timeouts()
 
     logger.info("All workers completed.")
 

@@ -6,7 +6,7 @@ from src.utils import logger
 class StorageManager:
     # Database schema version - increment when adding new migrations
     # Database schema version - increment when adding new migrations
-    CURRENT_VERSION = 6
+    CURRENT_VERSION = 7
 
     def __init__(self, db_path):
         self.db_path = db_path
@@ -139,6 +139,7 @@ class StorageManager:
             4: self._migration_v4_high_efficiency,
             5: self._migration_v5_remove_paper_id,
             6: self._migration_v6_add_language_column,
+            7: self._migration_v7_add_run_id
         }
 
         # Apply migrations in order
@@ -262,6 +263,17 @@ class StorageManager:
         else:
             logger.info("  - 'language' column already exists")
 
+    def _migration_v7_add_run_id(self, cursor):
+        """Migration v7: Add 'run_id' column to papers table."""
+        logger.info("Applying migration v7: Adding 'run_id' column")
+        cursor.execute("PRAGMA table_info(papers)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if 'run_id' not in columns:
+            cursor.execute("ALTER TABLE papers ADD COLUMN run_id TEXT DEFAULT NULL")
+            logger.info("  - Added 'run_id' column")
+        else:
+            logger.info("  - 'run_id' column already exists")
+
     def paper_exists_by_hash(self, p_hash):
         """Check if a paper exists using its 64-bit numeric hash."""
         if not p_hash or p_hash == 0:
@@ -303,7 +315,7 @@ class StorageManager:
         Adds a paper to the database with high-efficiency URL-centric hash checks.
         paper_data: dict containing keys matching table columns
         """
-        from src.utils import generate_stable_hash, normalize_url, to_title_case
+        from src.utils import generate_stable_hash, normalize_url, to_title_case, clean_latex
         
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -317,7 +329,9 @@ class StorageManager:
             # CLEAN TITLE
             # Apply strict title casing and cleaning before insertion/hashing
             if paper_data.get('title'):
-                paper_data['title'] = to_title_case(paper_data['title'])
+                paper_data['title'] = clean_latex(to_title_case(paper_data['title']))
+            if paper_data.get('abstract'):
+                paper_data['abstract'] = clean_latex(paper_data['abstract'])
             
             # 1. Generate Hashes
             # Use primary normalized URL for the stable paper_hash
@@ -351,8 +365,8 @@ class StorageManager:
                 INSERT OR IGNORE INTO papers (
                     paper_hash, title_hash, title, published_date, 
                     authors, abstract, pdf_path, source_url, downloaded_date, 
-                    source, synced_to_cloud, language
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source, synced_to_cloud, language, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 p_hash,
                 t_hash,
@@ -365,7 +379,8 @@ class StorageManager:
                 paper_data.get('downloaded_date', datetime.now().strftime("%Y-%m-%d")),
                 paper_data.get('source', 'unknown'),
                 0, # Not synced yet
-                paper_data.get('language', 'en')
+                paper_data.get('language', 'en'),
+                paper_data.get('run_id') # Add run_id
             ))
             conn.commit()
             if cursor.rowcount > 0:
@@ -477,7 +492,7 @@ class StorageManager:
 
         cursor.execute("""
             SELECT * FROM papers
-            WHERE downloaded_date = ?
+            WHERE run_id = ?
             ORDER BY source, published_date DESC
         """, (run_id,))
 

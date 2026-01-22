@@ -6,6 +6,7 @@ from tkinter import ttk, messagebox, scrolledtext
 import webbrowser
 from datetime import datetime
 import threading
+import glob
 
 # Add project root to path for imports if needed, though this is standalone
 sys.path.append(os.getcwd())
@@ -21,7 +22,7 @@ class ResearchViewer:
     def __init__(self, root):
         self.root = root
         self.root.title("Research Document Viewer")
-        self.root.geometry("1200x800")
+        self.root.geometry("1400x900")
         
         # Configure Styles
         self.style = ttk.Style()
@@ -68,13 +69,13 @@ class ResearchViewer:
         ttk.Button(top_frame, text="⚙ Settings", command=self._open_settings_dialog).pack(side=tk.LEFT, padx=(5, 0))
         ttk.Label(top_frame, text=f"Database: {self.db_path}", font=("Segoe UI", 8, "italic"), foreground="gray").pack(side=tk.RIGHT)
 
-        # 2. Main Split View
-        self.paned = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
-        self.paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        # 2. Main Split View (Horizontal)
+        self.paned_main = ttk.PanedWindow(self.root, orient=tk.HORIZONTAL)
+        self.paned_main.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # LEFT: List View
-        left_frame = ttk.Frame(self.paned)
-        self.paned.add(left_frame, weight=2)
+        left_frame = ttk.Frame(self.paned_main)
+        self.paned_main.add(left_frame, weight=2)
         
         # Treeview Scrollbars
         tree_scroll_y = ttk.Scrollbar(left_frame)
@@ -104,16 +105,20 @@ class ResearchViewer:
         
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
 
-        # RIGHT: Detail View
-        right_frame = ttk.Frame(self.paned, padding="10")
-        self.paned.add(right_frame, weight=1)
+        # RIGHT: Detail View (Vertical Split)
+        self.paned_detail = ttk.PanedWindow(self.paned_main, orient=tk.VERTICAL)
+        self.paned_main.add(self.paned_detail, weight=1)
+        
+        # Upper Detail: Meta & Buttons
+        right_upper = ttk.Frame(self.paned_detail, padding="10")
+        self.paned_detail.add(right_upper, weight=0) # weight 0 for meta area
         
         # Title Label
-        self.lbl_title = tk.Text(right_frame, wrap=tk.WORD, height=3, font=("Segoe UI", 12, "bold"), bg="#f0f0f0", relief="flat", state="disabled")
+        self.lbl_title = tk.Text(right_upper, wrap=tk.WORD, height=3, font=("Segoe UI", 12, "bold"), bg="#f0f0f0", relief="flat", state="disabled")
         self.lbl_title.pack(fill=tk.X, pady=(0, 10))
         
         # Meta Info
-        meta_frame = ttk.Frame(right_frame)
+        meta_frame = ttk.Frame(right_upper)
         meta_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.lbl_authors = ttk.Label(meta_frame, text="Authors: -", wraplength=400)
@@ -123,7 +128,7 @@ class ResearchViewer:
         self.lbl_published.pack(anchor="w")
 
         # Buttons
-        btn_frame = ttk.Frame(right_frame)
+        btn_frame = ttk.Frame(right_upper)
         btn_frame.pack(fill=tk.X, pady=10)
         
         self.btn_open_file = ttk.Button(btn_frame, text="📂 Open File", state="disabled", command=self._open_file)
@@ -133,11 +138,21 @@ class ResearchViewer:
         self.btn_open_url.pack(side=tk.LEFT, padx=(0, 10))
         
         self.btn_kindle = ttk.Button(btn_frame, text="📲 Send to Kindle", state="disabled", command=self._send_to_kindle)
-        self.btn_kindle.pack(side=tk.LEFT)
+        self.btn_kindle.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.btn_print = ttk.Button(btn_frame, text="🖨️ Print", state="disabled", command=self._print_file)
+        self.btn_print.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.btn_email = ttk.Button(btn_frame, text="✉️ Email", state="disabled", command=self._email_info)
+        self.btn_email.pack(side=tk.LEFT)
+
+        # Lower Detail: Abstract
+        right_lower = ttk.Frame(self.paned_detail, padding="10")
+        self.paned_detail.add(right_lower, weight=1)
 
         # Abstract
-        ttk.Label(right_frame, text="Abstract:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.txt_abstract = scrolledtext.ScrolledText(right_frame, wrap=tk.WORD, font=("Segoe UI", 10))
+        ttk.Label(right_lower, text="Abstract:", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self.txt_abstract = scrolledtext.ScrolledText(right_lower, wrap=tk.WORD, font=("Segoe UI", 10))
         self.txt_abstract.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
         self.txt_abstract.config(state="disabled")
 
@@ -145,6 +160,37 @@ class ResearchViewer:
         self.status_var = tk.StringVar()
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w")
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        # Set Initial Sash Positions
+        self.root.after(500, self._set_initial_sashes)
+
+    def _set_initial_sashes(self):
+        # Force update to ensure window sizes are calculated
+        self.root.update()
+        
+        # Set main split (List vs Details)
+        # Use a percentage of width if possible, or check current width
+        width = self.root.winfo_width()
+        if width > 100:
+            target_x = int(width * 0.6) # 60% for list
+            self.paned_main.sashpos(0, target_x)
+            
+        # Set detail split (Meta vs Abstract)
+        # We want about 300px for the top area
+        self.paned_detail.sashpos(0, 300)
+
+    def _format_authors(self, authors_str):
+        if not authors_str:
+            return "Unknown"
+        
+        # Split by common delimiters
+        import re
+        authors = re.split(r'[,;]', authors_str)
+        authors = [a.strip() for a in authors if a.strip()]
+        
+        if len(authors) > 5:
+            return ", ".join(authors[:5]) + ", et al."
+        return ", ".join(authors)
 
     def refresh_data(self):
         self.status_var.set("Loading data...")
@@ -290,6 +336,56 @@ class ResearchViewer:
         
         return text
 
+    def _resolve_pdf_path(self, db_path):
+        """Try to find the PDF file even if the absolute path in the DB is broken"""
+        if not db_path:
+            return None
+            
+        # 1. Basic Cleaning and Normalization
+        clean_path = db_path.strip().replace('\\', '/')
+        if os.path.exists(clean_path):
+            return os.path.normpath(clean_path)
+            
+        filename = os.path.basename(clean_path)
+        
+        # 2. Check Cloud Storage Root
+        cloud_root = self.config.get("cloud_storage", {}).get("path")
+        if cloud_root:
+            cloud_root = cloud_root.strip().replace('\\', '/')
+            if os.path.exists(cloud_root):
+                # Try immediate subdirectories (categories) first - fast
+                for item in os.listdir(cloud_root):
+                    cat_path = os.path.join(cloud_root, item)
+                    if os.path.isdir(cat_path):
+                        prob_path = os.path.join(cat_path, filename)
+                        if os.path.exists(prob_path):
+                            return os.path.normpath(prob_path)
+                
+                # Recursive fallback - thorough but potentially slower
+                # Using glob for efficient searching
+                search_pattern = os.path.join(cloud_root, "**", filename)
+                matches = glob.glob(search_pattern, recursive=True)
+                if matches:
+                    return os.path.normpath(matches[0])
+
+        # 3. Check Local Papers Directory
+        local_papers = self.config.get("papers_dir", "data/papers")
+        if local_papers:
+            local_papers = local_papers.strip().replace('\\', '/')
+            # Check relative to app root
+            if os.path.exists(local_papers):
+                prob_path = os.path.join(local_papers, filename)
+                if os.path.exists(prob_path):
+                    return os.path.normpath(prob_path)
+                
+                # Recursive fallback for local as well
+                search_pattern = os.path.join(local_papers, "**", filename)
+                matches = glob.glob(search_pattern, recursive=True)
+                if matches:
+                    return os.path.normpath(matches[0])
+                    
+        return None
+
     def _display_details(self, paper):
         # Title
         raw_title = paper.get('title', 'No Title')
@@ -301,7 +397,8 @@ class ResearchViewer:
         self.lbl_title.config(state="disabled")
         
         # Meta
-        self.lbl_authors.config(text=f"Authors: {paper.get('authors', 'Unknown')}")
+        formatted_authors = self._format_authors(paper.get('authors'))
+        self.lbl_authors.config(text=f"Authors: {formatted_authors}")
         self.lbl_published.config(text=f"Published: {paper.get('published_date', '-')}")
         
         # Abstract
@@ -314,23 +411,28 @@ class ResearchViewer:
         self.txt_abstract.config(state="disabled")
         
         # Buttons
-        self.current_file_path = paper.get('pdf_path')
+        raw_file_path = paper.get('pdf_path')
+        self.current_file_path = self._resolve_pdf_path(raw_file_path)
         self.current_url = paper.get('source_url')
         
-        if self.current_file_path and os.path.exists(self.current_file_path):
+        if self.current_file_path:
             self.btn_open_file.config(state="normal")
+            self.btn_kindle.config(state="normal")
+            self.btn_print.config(state="normal")
         else:
             self.btn_open_file.config(state="disabled")
+            self.btn_kindle.config(state="disabled")
+            self.btn_print.config(state="disabled")
+            
+        if self.current_url or self.current_file_path:
+            self.btn_email.config(state="normal")
+        else:
+            self.btn_email.config(state="disabled")
             
         if self.current_url:
             self.btn_open_url.config(state="normal")
         else:
             self.btn_open_url.config(state="disabled")
-
-        if self.current_file_path and os.path.exists(self.current_file_path):
-            self.btn_kindle.config(state="normal")
-        else:
-            self.btn_kindle.config(state="disabled")
 
     def _open_file(self):
         if self.current_file_path and os.path.exists(self.current_file_path):
@@ -342,6 +444,28 @@ class ResearchViewer:
     def _open_url(self):
         if self.current_url:
             webbrowser.open(self.current_url)
+
+    def _print_file(self):
+        if self.current_file_path and os.path.exists(self.current_file_path):
+            try:
+                os.startfile(self.current_file_path, "print")
+                self.status_var.set("Print job sent to system.")
+            except Exception as e:
+                messagebox.showerror("Print Error", f"Could not print: {e}")
+
+    def _email_info(self):
+        title = self.lbl_title.get("1.0", tk.END).strip()
+        body = f"Paper Title: {title}\n\n"
+        if self.current_url:
+            body += f"URL: {self.current_url}\n"
+        if self.current_file_path:
+            body += f"Local Path: {self.current_file_path}\n"
+            
+        import urllib.parse
+        subject = urllib.parse.quote(f"Research Paper: {title}")
+        body_encoded = urllib.parse.quote(body)
+        
+        webbrowser.open(f"mailto:?subject={subject}&body={body_encoded}")
 
     def _send_to_kindle(self):
         if not self.current_file_path: return

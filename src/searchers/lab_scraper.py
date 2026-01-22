@@ -352,7 +352,7 @@ class LabScraper(BaseSearcher):
                     'title': title,
                     'published_date': pub_date.strftime("%Y-%m-%d") if pub_date else "Unknown",
                     'authors': lab['name'],
-                    'abstract': BeautifulSoup(summary, 'html.parser').get_text()[:1000] + "...",
+                    'abstract': self._clean_lab_abstract(BeautifulSoup(summary, 'html.parser').get_text(separator=' ', strip=True), title)[:1000] + "...",
                     'source_url': entry.get('link'),
                     'pdf_url': None,
                     'source': f"labs_{lab['name'].lower()}",
@@ -380,6 +380,31 @@ class LabScraper(BaseSearcher):
         # This is harder, but we can try to find where a new sentence starts without a space if glued
         # For now, just clean up extra spaces and Title Case it later
         return title.strip()
+
+    def _clean_lab_abstract(self, text, title=""):
+        """Cleans up RSS abstracts/summaries that contain metadata garbage."""
+        if not text: return ""
+        
+        # 1. Strip Date (e.g. Jan 9, 2026) - Common in Anthropic/OpenAI feeds
+        text = re.sub(r'^[A-Z][a-z]{2}\s\d{1,2},\s\d{4}\s*', '', text)
+        
+        # 2. Strip common lab categories
+        categories = ["Alignment", "Interpretability", "Societal Impacts", "Economic Research", "Research", "Safety", "Product", "Announcements"]
+        for cat in categories:
+            if text.startswith(cat):
+                # Replace "CategoryCategory" or "Category "
+                text = re.sub(f'^{cat}\s*', '', text)
+        
+        # 3. Strip Title repetition (case insensitive check)
+        # Often the abstract starts with the Title
+        if title and len(title) > 5:
+            # Normalize for comparison
+            if text.lower().startswith(title.lower()):
+                text = text[len(title):].strip()
+                # Remove leading colons or hyphens left over ": Situating..."
+                text = re.sub(r'^[:\-\s]+', '', text)
+                
+        return text.strip()
 
     def _process_scrape(self, lab, start_date=None, stop_event=None):
         self.logger.info(f"Scraping {lab['name']} with browser...")
@@ -418,11 +443,11 @@ class LabScraper(BaseSearcher):
 
                 if not title_tag:
                     if art.name == 'a':
-                        title = art.get_text(strip=True)
+                        title = art.get_text(separator=' ', strip=True)
                     else:
                         continue
                 else:
-                    title = title_tag.get_text(strip=True)
+                    title = title_tag.get_text(separator=' ', strip=True)
 
                 if not title or len(title) < 5: continue
 

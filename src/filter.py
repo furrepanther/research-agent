@@ -429,8 +429,8 @@ class FilterManager:
                 return False
 
         # 6. Check Proximity (terms from different groups should be near each other)
-        # Use the default max_distance (3000) defined in _check_term_proximity
-        if not self._check_term_proximity(content, self.required_groups):
+        # Relaxed distance to allow more papers through (increased from 3000 to 10000)
+        if not self._check_term_proximity(content, self.required_groups, max_distance=10000):
             logger.debug(f"Filtered (proximity): '{title[:40]}...' terms too far apart")
             return False
 

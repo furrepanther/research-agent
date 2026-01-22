@@ -53,15 +53,24 @@ class AaaiSearcher(BaseSearcher):
             params = {'metadataPrefix': 'oai_dc', 'ignore_deleted': True}
             if from_str:
                 params['from'] = from_str
+                self.logger.info(f"AAAI OAI-PMH Filter: fetching records from {from_str}")
                 
+            # Set timeout to prevent indefinite hangs (60s)
+            sickle = Sickle(self.endpoint, headers=self.headers, timeout=60)
             records = sickle.ListRecords(**params)
             
             count = 0
             scanned = 0
+            MAX_SCAN_LIMIT = 2000 # Safety brake
+            
             for record in records:
                 scanned += 1
-                if scanned % 50 == 0:
+                if scanned % 20 == 0:
                     self.logger.info(f"Scanned {scanned} AAAI records...")
+                    
+                if scanned > MAX_SCAN_LIMIT:
+                    self.logger.info(f"Reached MAX_SCAN_LIMIT ({MAX_SCAN_LIMIT}). Stopping AAAI scan.")
+                    break
 
                 if stop_event and stop_event.is_set():
                     break

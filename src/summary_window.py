@@ -1,29 +1,45 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, messagebox
 import os
 import subprocess
 import platform
+import sqlite3
+from src.utils import get_config
 
 class SummaryWindow:
-    def __init__(self, papers, run_id, mode="DAILY"):
+    def __init__(self, papers, run_id, mode="DAILY", on_close=None, enable_review=False):
         self.papers = papers
         self.run_id = run_id
         self.mode = mode
+        self.on_close = on_close
+        self.enable_review = enable_review
+        self.review_vars = {} # Map paper_id -> BooleanVar
+        
         self.window = tk.Toplevel()
+        self.window.configure(cursor="arrow") # Force normal cursor
 
         # Update title and size based on mode
         if mode == "BACKFILL":
             self.window.title(f"Backfill Summary - {len(papers)} total papers")
-            self.window.geometry("450x300")  # Smaller for stats-only display
-            self.window.resizable(False, False)  # Fixed size for stats
+            self.window.geometry("450x300")
+            self.window.resizable(False, False)
         elif mode == "TESTING":
             self.window.title(f"Testing Run Summary - {len(papers)} papers")
-            self.window.geometry("1400x700")  # Wide enough to show full abstracts
+            self.window.geometry("1400x700")
         else:
-            self.window.title(f"Daily Run Summary - {len(papers)} new papers")
-            self.window.geometry("1400x700")  # Wide enough to show full abstracts
+            if enable_review:
+                self.window.title(f"Smart Review - {len(papers)} papers")
+            else:
+                self.window.title(f"Daily Run Summary - {len(papers)} new papers")
+            self.window.geometry("1400x700")
 
+        self.window.protocol("WM_DELETE_WINDOW", self._on_window_close)
         self._create_ui()
+    
+    def _on_window_close(self):
+        self.window.destroy()
+        if self.on_close:
+            self.on_close()
 
     def _create_ui(self):
         # Only show stats frame at top for BACKFILL mode
@@ -97,10 +113,60 @@ class SummaryWindow:
             counts_label = ttk.Label(footer_frame, text=summary_text, font=("Consolas", 10))
             counts_label.pack(pady=5, anchor="center")
 
-        # Close button at bottom
+        # Close / Commit button
         btn_frame = ttk.Frame(self.window)
         btn_frame.pack(pady=10)
-        ttk.Button(btn_frame, text="Close", command=self.window.destroy).pack()
+        
+        if hasattr(self, 'enable_review') and self.enable_review:
+            # Container for buttons and stats
+            control_frame = ttk.Frame(btn_frame)
+            control_frame.pack()
+            
+            ttk.Button(control_frame, text="Save & Continue", command=self._on_commit_review).pack(side="left", padx=10)
+            
+            # Rolling Counter Label
+            self.lbl_live_counts = ttk.Label(control_frame, text="", font=("Consolas", 11, "bold"))
+            self.lbl_live_counts.pack(side="left", padx=10)
+            self._update_live_counts() # Init logic
+            
+            ttk.Label(btn_frame, text="Unchecked items will be marked REJECTED", font=("Arial", 8, "italic")).pack(pady=2)
+        else:
+            ttk.Button(btn_frame, text="Close", command=self._on_window_close).pack()
+
+    def _update_live_counts(self):
+        """Update the rolling count of selected papers"""
+        if not hasattr(self, 'review_vars') or not hasattr(self, 'lbl_live_counts'):
+            return
+            
+        total = len(self.papers)
+        selected = sum(1 for var in self.review_vars.values() if var.get())
+        
+        self.lbl_live_counts.config(
+            text=f"Selected: {selected} / {total}"
+        )
+
+    def _on_commit_review(self):
+        """Mark unchecked items as REJECTED in DB"""
+        rejects = [pid for pid, var in self.review_vars.items() if not var.get()]
+        
+        if rejects:
+             config = get_config()
+             db_path = config.get("db_path", "data/metadata.db")
+             try:
+                 with sqlite3.connect(db_path) as conn:
+                     cursor = conn.cursor()
+                     for pid in rejects:
+                         # Mark as REJECTED so they aren't downloaded/synced
+                         cursor.execute("UPDATE papers SET pdf_path='REJECTED' WHERE id=?", (pid,))
+                     conn.commit()
+                 print(f"[Review] marked {len(rejects)} papers as REJECTED.")
+                 
+             except Exception as e:
+                 messagebox.showerror("Error", f"Failed to save rejections: {e}")
+                 return
+
+        # Explicitly call close handler
+        self._on_window_close()
 
     def _calculate_source_stats(self):
         """Calculate paper counts by source"""
@@ -170,6 +236,17 @@ class SummaryWindow:
         left_frame = ttk.Frame(card_frame, width=360)
         left_frame.pack(side="left", fill="y", expand=False, padx=10, pady=10)
         left_frame.pack_propagate(False)  # Prevent frame from shrinking
+
+        # Review Checkbox (if enabled)
+        if hasattr(self, 'enable_review') and self.enable_review:
+            var = tk.BooleanVar(value=True)
+            # Use specific ID or title hash as key
+            p_id = paper.get('id', paper.get('title')) 
+            self.review_vars[p_id] = var
+            
+            # Bind command to update counts
+            chk = ttk.Checkbutton(left_frame, text=" KEEP", variable=var, command=self._update_live_counts)
+            chk.pack(anchor="w", pady=(0, 5))
 
         # Title (clickable)
         title_label = tk.Label(

@@ -9,7 +9,7 @@ import multiprocessing
 import traceback
 import os
 from datetime import datetime
-from src.utils import get_config, logger, to_title_case
+from src.utils import get_config, logger, to_title_case, clean_text
 from src.filter import FilterManager
 from src.storage import StorageManager
 
@@ -130,6 +130,16 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
             "details": f"Found {len(results)} papers"
         })
 
+        # OPTIMIZATION: Skip filtering if no results
+        if not results:
+             task_queue.put({
+                "type": "UPDATE_ROW",
+                "source": source_name,
+                "status": "No Results",
+                "details": "0 papers found"
+            })
+             return
+
         # Filtering phase
         task_queue.put({
             "type": "PROGRESS_UPDATE",
@@ -187,6 +197,8 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
         # Beautify all papers before processing
         for p in papers_to_download:
             p['title'] = to_title_case(p.get('title', ''))
+            p['abstract'] = clean_text(p.get('abstract', ''))
+            p['title'] = clean_text(p.get('title', '')) # Clean title too (remove newlines if any)
 
         for i, paper in enumerate(papers_to_download):
             if stop_event and stop_event.is_set():
@@ -211,7 +223,7 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
                 duplicate_count += 1
                 task_queue.put({
                     "type": "LOG",
-                    "text": f"[{source_name}] Skipping (in cloud storage): {paper['title'][:50]}..."
+                    "text": f"[{source_name}] Failed 2nd filter (already in cloud storage): {paper['title'][:50]}..."
                 })
                 
                 # Count toward progress in BACKFILL mode
@@ -235,7 +247,7 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
                 duplicate_count += 1
                 task_queue.put({
                     "type": "LOG",
-                    "text": f"[{source_name}] Skipping (in database): {paper['title'][:50]}..."
+                    "text": f"[{source_name}] Failed 2nd filter (already in database): {paper['title'][:50]}..."
                 })
                 
                 if mode == "BACKFILL":
@@ -264,7 +276,8 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
             if path:
                 # Set metadata and store
                 paper['pdf_path'] = path
-                paper['downloaded_date'] = run_id
+                paper['run_id'] = run_id # Store explicit Run ID for session tracking
+                paper['downloaded_date'] = datetime.now().strftime("%Y-%m-%d")
                 storage.add_paper(paper)
                 downloaded_count += 1
 
@@ -315,6 +328,109 @@ def run_worker(searcher_class, source_name, task_queue, stop_event, prompt, sear
                 "text": f"[{source_name}]   3. API/network error prevented fetching"
             })
             raise RuntimeError(error_msg)
+
+        # DOCUMENT INGESTION PROCESSING (only for first worker to complete)
+        # This is a simple approach - each worker checks and processes if ingest folder exists
+        # Only ArXiv worker will handle ingestion to avoid duplication
+        if source_name == "ArXiv":
+            ingest_path = config.get("ingest_path", "").strip()
+            if ingest_path and os.path.exists(ingest_path):
+                try:
+                    from src.document_ingest import process_ingest_folder, scan_ingest_folder
+                    
+                    # In TEST mode, just count
+                    if mode == "TEST":
+                        pdf_files = scan_ingest_folder(ingest_path)
+                        task_queue.put({
+                            "type": "LOG",
+                            "text": f"[Ingest] TEST MODE: {len(pdf_files)} documents found (not processed)"
+                        })
+                        task_queue.put({
+                            "type": "UPDATE_ROW",
+                            "source": "Documents Ingested",
+                            "status": "Test",
+                            "count": str(len(pdf_files)),
+                            "details": f"{len(pdf_files)} found"
+                        })
+                    else:
+                        # Process ingested documents
+                        def ingest_progress(msg):
+                            task_queue.put(msg)
+                        
+                        ingest_stats = process_ingest_folder(
+                            ingest_path, 
+                            mode, 
+                            run_id, 
+                            config.get("staging_dir", "F:/RESTMP"),
+                            ingest_progress
+                        )
+                        
+                        # Add ingested papers to storage
+                        # Note: add_paper() already handles duplicate detection via hash checks
+                        added_count = 0
+                        duplicate_count = 0
+                        for paper in ingest_stats['papers']:
+                            result = storage.add_paper(paper)
+                            if result:  # Returns ID if added, False if duplicate
+                                added_count += 1
+                            else:
+                                duplicate_count += 1
+                                task_queue.put({
+                                    'type': 'LOG',
+                                    'text': f"[Ingest] Duplicate found (already in database): {paper['title'][:50]}..."
+                                })
+                        
+                        # Log summary if duplicates found
+                        if duplicate_count > 0:
+                            task_queue.put({
+                                'type': 'LOG',
+                                'text': f"[Ingest] {added_count} new papers added, {duplicate_count} duplicates skipped"
+                            })
+                        
+                        # Update status
+                        status_text = "Complete" if added_count > 0 else ("Duplicates" if duplicate_count > 0 else "none found")
+                        details = f"✓ {added_count} new" if added_count > 0 else f"{duplicate_count} duplicates" if duplicate_count > 0 else "none found"
+                        task_queue.put({
+                            "type": "UPDATE_ROW",
+                            "source": "Documents Ingested",
+                            "status": status_text,
+                            "count": str(added_count),
+                            "details": details
+                        })
+                        
+                        # Update "Other Languages" row
+                        if ingest_stats['non_english'] > 0:
+                            task_queue.put({
+                                "type": "UPDATE_ROW",
+                                "source": "Other Languages",
+                                "status": "Complete",
+                                "count": str(ingest_stats['non_english']),
+                                "details": f"{ingest_stats['non_english']} non-English found"
+                            })
+                        else:
+                            task_queue.put({
+                                "type": "UPDATE_ROW",
+                                "source": "Other Languages",
+                                "status": "-",
+                                "count": "-",
+                                "details": "none found"
+                            })
+                        
+                except Exception as e:
+                    logger.error(f"Error processing ingested documents: {e}")
+                    task_queue.put({
+                        "type": "LOG",
+                        "text": f"[Ingest] Error processing documents: {e}"
+                    })
+            else:
+                # No ingest path configured - set Other Languages to default
+                task_queue.put({
+                    "type": "UPDATE_ROW",
+                    "source": "Other Languages",
+                    "status": "-",
+                    "count": "-",
+                    "details": "none found"
+                })
 
         # Complete
         status_text = "Complete" if downloaded_count > 0 else "No Results"

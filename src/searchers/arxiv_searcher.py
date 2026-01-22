@@ -81,7 +81,9 @@ class ArxivSearcher(BaseSearcher):
                 if start_date:
                     if start_date.tzinfo is None:
                         start_date = start_date.replace(tzinfo=timezone.utc)
+                    
                     if result.published < start_date:
+                        self.logger.info(f"[{self.source_name}] Date Cutoff Reached: Paper {result.published.strftime('%Y-%m-%d')} is older than {start_date.strftime('%Y-%m-%d')}")
                         reached_date_limit = True
                         break 
 

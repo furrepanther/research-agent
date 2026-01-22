@@ -2,6 +2,7 @@ import yaml
 import os
 import logging
 import re
+import sys
 from datetime import datetime
 
 # Setup logging
@@ -15,10 +16,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def get_resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 def load_config(config_path="config.yaml"):
-    if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Config file not found at {config_path}")
-    with open(config_path, "r") as f:
+    # Target path priority:
+    # 1. Current Working Directory (for dev/custom runs)
+    # 2. Directory of the executable (for standalone installations)
+    # 3. Environment variable (optional, not implemented)
+    
+    final_path = config_path
+    if not os.path.exists(final_path):
+        # Check near the executable if frozen
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(sys.executable)
+            alt_path = os.path.join(exe_dir, config_path)
+            if os.path.exists(alt_path):
+                final_path = alt_path
+        
+    if not os.path.exists(final_path):
+        raise FileNotFoundError(f"Config file not found at {final_path}")
+    
+    with open(final_path, "r") as f:
         return yaml.safe_load(f)
 
 def ensure_directories(config):
@@ -32,7 +57,14 @@ def get_config():
 
 def save_config(config, config_path="config.yaml"):
     """Saves the configuration dict to the file."""
-    with open(config_path, "w") as f:
+    # Try to find where it was loaded from if we want to be persistent
+    final_path = config_path
+    if not os.path.exists(final_path) and getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        alt_path = os.path.join(exe_dir, config_path)
+        final_path = alt_path
+
+    with open(final_path, "w") as f:
         yaml.dump(config, f, sort_keys=False, default_flow_style=False)
 
 def extract_simple_keywords(query):
@@ -60,6 +92,33 @@ def extract_simple_keywords(query):
             keywords.add(t)
             
     return list(keywords)
+
+def clean_latex(text):
+    """
+    Removes common LaTeX formatting commands from text, keeping the content.
+    Handles nested commands by looping.
+    """
+    if not text:
+        return ""
+        
+    # Standard commands to strip wrapper from: \textbf{text} -> text
+    # Loop to handle nesting like \underline{\textbf{...}}
+    prev_text = None
+    while prev_text != text:
+        prev_text = text
+        # Remove formatting wrappers
+        text = re.sub(r'\\(textbf|textit|underline|emph|textsc)\{(.*?)\}', r'\2', text)
+        # Remove simple no-arg commands
+        text = re.sub(r'\\(bf|it|tt)\s+', '', text)
+        
+    # Handle escaped characters
+    text = text.replace(r'\%', '%').replace(r'\&', '&').replace(r'\$', '$').replace(r'\#', '#')
+    text = text.replace(r'\{', '{').replace(r'\}', '}')
+    
+    # Remove math mode delimiters (simple case)
+    text = text.replace('$', '')
+    
+    return text.strip()
 
 def to_title_case(text):
     """Converts a string to Title Case based on standard rules, preserving acronyms."""
@@ -325,3 +384,48 @@ def is_english(text, threshold=0.5):
         return False
     except:
         return True
+
+def clean_text(text):
+    """
+    Beautifies text for database storage.
+    - Remove newlines
+    - Compress spaces
+    - Fix hyphenation (e.g. 'hyphen- ation' -> 'hyphenation')
+    """
+    if not text:
+        return ""
+    
+    import re
+    
+    # 1. De-hyphenation (Word + Hyphen + Whitespace + Word)
+    # Fixes splits like "algorithm- ic" -> "algorithmic"
+    text = re.sub(r'(\w)-\s+(\w)', r'\1\2', text)
+    
+    # 2. Whitespace normalization (also handles newlines)
+    return ' '.join(text.split())
+
+def clear_directory(directory_path):
+    """
+    Recursively deletes all contents of a directory but keeps the directory itself.
+    Used for cleaning up staging areas after successful transfers.
+    """
+    import os
+    import shutil
+    
+    if not os.path.exists(directory_path):
+        logger.warning(f"Directory does not exist: {directory_path}")
+        return
+    
+    try:
+        for item in os.listdir(directory_path):
+            item_path = os.path.join(directory_path, item)
+            try:
+                if os.path.isfile(item_path) or os.path.islink(item_path):
+                    os.unlink(item_path)
+                elif os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+            except Exception as e:
+                logger.error(f"Failed to delete {item_path}: {e}")
+        logger.info(f"Cleared directory: {directory_path}")
+    except Exception as e:
+        logger.error(f"Error clearing directory {directory_path}: {e}")
