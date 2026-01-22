@@ -1,0 +1,46 @@
+storage_path: F:/Antigravity_Results/Research_Papers/data
+staging_dir: F:/RESTMP
+cloud_storage:
+  enabled: true
+  path: R:/My Drive/03 Research Papers
+  check_duplicates: true
+  backup_enabled: true
+  backup_path: G:\Backups\ResearchPapers
+db_path: R:/My Drive/03 Research Papers/metadata.db
+mode_settings:
+  testing:
+    max_papers_per_agent: 10
+    per_query_limit: 5
+    respect_date_range: false
+  test:
+    max_papers_per_agent: 0
+    per_query_limit: 100
+    respect_date_range: true
+  daily:
+    max_papers_per_agent: 50
+    per_query_limit: 20
+    respect_date_range: true
+  backfill:
+    max_papers_per_agent: null
+    per_query_limit: 10
+    respect_date_range: true
+max_results_daily: 200
+max_results_backfill: 200
+retry_settings:
+  max_worker_retries: 2
+  worker_retry_delay: 5
+  worker_timeout: 600
+  api_max_retries: 3
+  api_base_delay: 2
+  request_pacing_delay: 1.0
+export_dir: F:/Antigravity_Results/Research_Papers
+export_filename: research_log.xlsx
+scheduled_time: 06:00
+papers_dir: data/papers
+email:
+  smtp_server: smtp.gmail.com
+  smtp_port: 587
+  smtp_user: furrepanther@gmail.com
+  kindle_email: insane_membrane1@kindle.com
+date_overlap_days: 15
+ingest_path: G:/Downloads/Add to Research
